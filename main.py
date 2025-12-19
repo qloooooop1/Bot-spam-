@@ -7,25 +7,30 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ChatPermissions
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")  # سيتم أخذه من Environment Variables في Render
+TOKEN = os.getenv("TOKEN")
 GROUP_ID = -1001224326322
-GROUP_USERNAME = None  # إذا كان لمجموعتك يوزرنيم (مثل @mygroup)، ضع "mygroup" هنا
+GROUP_USERNAME = None  # إذا كان لمجموعتك يوزرنيم، ضعه هنا مثل "mygroup"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+# التصحيح الرئيسي هنا: استخدام DefaultBotProperties
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 
 # تحويل الأرقام العربية/الفارسية/الهندية
 def normalize_digits(text: str) -> str:
-    trans = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹०१२३४५۶۷८۹', '012345678901234567890123456789')
+    trans = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹۰१२३४५۶۷८۹', '012345678901234567890123456789')
     return text.translate(trans)
 
-# أنماط الكشف الذكية (محدثة ودقيقة جداً)
+# أنماط الكشف الذكية
 PHONE_PATTERN = re.compile(r'(?:\+?\d{1,4}[\W_*/.-]?)?(?:\(\d{1,4}\)[\W_*/.-]?)?\d{3,4}[\W_*/.-]?\d{3,4}[\W_*/.-]?\d{3,9}(?!\d)')
 PHONE_CONTEXT_PATTERN = re.compile(
     r'(?:اتصل|رقمي|واتس|هاتف|mobile|phone|call|contact|whatsapp|📞|☎️|اسمي|فلان|[\w\u0600-\u06FF]{2,})'
@@ -55,32 +60,27 @@ def contains_spam(text: str) -> bool:
         return False
     normalized = normalize_digits(text)
 
-    # كشف رقم هاتف
     phones = PHONE_PATTERN.findall(normalized)
     if phones:
         clean_phones = [''.join(re.findall(r'\d', p)) for p in phones]
         if any(len(p) >= 9 for p in clean_phones):
             return True
 
-    # كشف رقم في سياق مشبوه
     if PHONE_CONTEXT_PATTERN.search(normalized):
         return True
 
-    # كشف روابط مشبوهة
     if (WHATSAPP_INVITE_PATTERN.search(text) or
         TELEGRAM_INVITE_PATTERN.search(text) or
         TIKTOK_PATTERN.search(text) or
         SHORT_LINK_PATTERN.search(text)):
         return True
 
-    # كشف روابط خارجية غير مسموحة
     urls = re.findall(r'(?:h\s*t\s*t\s*p\s*s?://)?[^\s/]+\.[^\s/]+', text, re.IGNORECASE)
     for url in urls:
         clean_url = url.replace(' ', '').lower()
         if not any(domain in clean_url for domain in ALLOWED_DOMAINS):
             return True
 
-    # رقم + رابط = سبام محتمل
     has_phone = bool(PHONE_PATTERN.search(normalized))
     has_link = bool(re.search(r'(?:h\s*t\s*t\s*p\s*s?://)?[^\s/]+\.[^\s/]+', text, re.IGNORECASE))
     if has_phone and has_link:
@@ -101,7 +101,6 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة المخالفة
     await message.delete()
 
     now = datetime.now()
