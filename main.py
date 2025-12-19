@@ -6,12 +6,13 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ChatPermissions
+from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.filters import Command
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("TOKEN")  # سيتم أخذه من Environment Variables في Render
 GROUP_ID = -1001224326322
 GROUP_USERNAME = None  # إذا كان لمجموعتك يوزرنيم، ضعه هنا مثل "mygroup"
 
@@ -27,7 +28,7 @@ dp = Dispatcher()
 
 # تحويل الأرقام العربية/الفارسية/الهندية
 def normalize_digits(text: str) -> str:
-    trans = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹۰१२३४५۶۷८۹', '012345678901234567890123456789')
+    trans = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹०۱۲３४۵۶۷۸९', '012345678901234567890123456789')
     return text.translate(trans)
 
 # أنماط الكشف الذكية
@@ -138,6 +139,26 @@ async def check_message(message: types.Message):
         await notify_msg.delete()
     except:
         pass
+
+# ================== معالج أمر /start مع مقدمة احترافية ==================
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    if message.chat.type != "private":
+        return  # يعمل فقط في المحادثات الخاصة
+
+    intro_text = (
+        "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
+        "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع كتم أو حظر المخالفين بطريقة احترافية وسريعة.</i>\n\n"
+        "📌 <b>ملاحظة مهمة:</b> البوت يعمل فقط في المجموعات الخاصة المسجلة لدينا. لتسجيل مجموعتك أو الحصول على مزيد من المعلومات، اضغط على الزر أدناه لبدء العملية.\n\n"
+        "🌟 <b>ابدأ الآن واستمتع بحماية فائقة!</b>"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 تسجيل مجموعتك الآن", url="https://t.me/ql_om")],
+        [InlineKeyboardButton(text="❓ استفسار أو مساعدة", url="https://t.me/ql_om")]
+    ])
+
+    await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
 
 # ================== FastAPI + Webhook ==================
 app = FastAPI()
