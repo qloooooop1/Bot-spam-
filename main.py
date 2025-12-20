@@ -9,39 +9,46 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
+from aiogram.filters import CommandStart
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")  # تأكد من وضع التوكن في Environment Variables على Render
-GROUP_ID = -1001224326322  # معرف المجموعة
-GROUP_USERNAME = None  # إذا كان للمجموعة يوزرنيم، ضعه هنا (اختياري)
+TOKEN = os.getenv("TOKEN")  # ضع التوكن في Environment Variables على Render
+GROUP_ID = -1001224326322  # استبدل بمعرف مجموعتك (super group)
+GROUP_USERNAME = None  # إذا كان للمجموعة يوزرنيم عام، ضعه هنا (اختياري)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# إعداد البوت مع ParseMode افتراضي
+# إعداد البوت
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# تحويل الأرقام العربية/الهندية إلى لاتينية
+# تحويل الأرقام العربية/فارسية/هندية إلى لاتينية
 def normalize_digits(text: str) -> str:
-    trans = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹', '012345678901234567890123456789')
+    trans = str.maketrans(
+        '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
+        '012345678901234567890123456789'
+    )
     return text.translate(trans)
 
 # أنماط الكشف عن السبام
-PHONE_PATTERN = re.compile(r'(?:\+?\d{1,4}[\W_*/.-]?)?(?:\(\d{1,4}\)[\W_*/.-]?)?\d{3,4}[\W_*/.-]?\d{3,4}[\W_*/.-]?\d{3,9}(?!\d)')
+PHONE_PATTERN = re.compile(r'(?:\+?\d{1,4}[\s\W_*/.-]?)?(?:\(\d{1,4}\)[\s\W_*/.-]?)?\d{3,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,9}(?!\d)')
 PHONE_CONTEXT_PATTERN = re.compile(
-    r'(?:اتصل|رقمي|واتس|هاتف|mobile|phone|call|contact|whatsapp|📞|☎️|اسمي|فلان)[\s\W_*/]{0,10}'
-    r'(?:\+?\d{1,4}[\W_*/.-]?\d{3,4}[\W_*/.-]?\d{3,4}[\W_*/.-]?\d{3,9})',
+    r'(?:اتصل|رقمي|واتس|هاتف|موبايل|mobile|phone|call|contact|whatsapp|واتساب|📞|☎️|اسمي|فلان)[\s\W_*/]{0,10}'
+    r'(?:\+?\d{1,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,9})',
     re.IGNORECASE | re.UNICODE
 )
 WHATSAPP_INVITE_PATTERN = re.compile(r'(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/[^\s]*|\+\w{8,}', re.IGNORECASE)
-TELEGRAM_INVITE_PATTERN = re.compile(r'(?:https?://)?t\.me/(?:joinchat/|[+])[\w-]{10,}|(?:https?://)?t\.me/(?!'+(GROUP_USERNAME or '')+r')[^\s/]+', re.IGNORECASE)
-TIKTOK_PATTERN = re.compile(r'(?:https?://)?(?:vm\.|www\.)?tiktok\.com/[^\s]*', re.IGNORECASE)
-SHORT_LINK_PATTERN = re.compile(r'(?:https?://)?(bit\.ly|tinyurl\.com|goo\.gl|t\.co)/[^\s]*', re.IGNORECASE)
+TELEGRAM_INVITE_PATTERN = re.compile(
+    r'(?:https?://)?t\.me/(?:joinchat/|[+])[\w-]{10,}|(?:https?://)?t\.me/(?!' + (GROUP_USERNAME or '') + r')[^\s/]+',
+    re.IGNORECASE
+)
+TIKTOK_PATTERN = re.compile(r'(?:https?://)?(?:vm\.|www\.)?tiktok\.com/[^\s]*|@[\w]+\s*tiktok', re.IGNORECASE)
+SHORT_LINK_PATTERN = re.compile(r'(?:https?://)?(bit\.ly|tinyurl\.com|goo\.gl|t\.co|short\.link)/[^\s]*', re.IGNORECASE)
 
 ALLOWED_DOMAINS = ["youtube.com", "youtu.be", "instagram.com", "instagr.am", "x.com", "twitter.com"]
 
+# متابعة المخالفات
 violations = {}
 last_violation = {}
 
@@ -75,8 +82,8 @@ def contains_spam(text: str) -> bool:
         SHORT_LINK_PATTERN.search(text)):
         return True
 
-    # كشف الروابط غير المسموحة
-    urls = re.findall(r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.[^\s/]+', text, re.IGNORECASE)
+    # كشف روابط غير مسموحة
+    urls = re.findall(r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.[^\s]{2,}', text, re.IGNORECASE)
     for url in urls:
         clean_url = url.replace(' ', '').lower()
         if not any(domain in clean_url for domain in ALLOWED_DOMAINS):
@@ -90,6 +97,7 @@ def contains_spam(text: str) -> bool:
 
     return False
 
+# معالج الرسائل في المجموعة
 @dp.message()
 async def check_message(message: types.Message):
     if message.chat.id != GROUP_ID:
@@ -110,6 +118,7 @@ async def check_message(message: types.Message):
         pass
 
     now = datetime.now()
+    # إعادة تصفير العداد بعد 7 أيام
     if user_id in last_violation and now - last_violation[user_id] > timedelta(days=7):
         violations[user_id] = 0
 
@@ -119,7 +128,6 @@ async def check_message(message: types.Message):
     full_name = message.from_user.full_name
 
     if count == 1:
-        # كتم لمدة 24 ساعة
         await bot.restrict_chat_member(
             chat_id=GROUP_ID,
             user_id=user_id,
@@ -134,7 +142,6 @@ async def check_message(message: types.Message):
             f"🔄 التكرار يؤدي إلى الحظر الدائم"
         )
     else:
-        # حظر دائم
         await bot.ban_chat_member(GROUP_ID, user_id)
         violations.pop(user_id, None)
         notification = (
@@ -144,23 +151,19 @@ async def check_message(message: types.Message):
             f"🛡️ المجموعة محمية"
         )
 
-    # إرسال إشعار ثم حذفه بعد دقيقتين
     notify_msg = await bot.send_message(GROUP_ID, notification)
     asyncio.create_task(delete_after_delay(notify_msg, 120))
 
-async def delete_after_delay(message: types.Message, delay: int):
+async def delete_after_delay(message: types.Message, delay: int = 120):
     await asyncio.sleep(delay)
     try:
         await message.delete()
     except:
         pass
 
-# ================== أمر /start في الخاص ==================
-@dp.message(Command("start"))
+# أمر /start في المحادثة الخاصة
+@dp.message(CommandStart())
 async def start_command(message: types.Message):
-    if message.chat.type != types.ChatType.PRIVATE:
-        return
-
     intro_text = (
         "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
         "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع كتم أو حظر المخالفين بطريقة احترافية وسريعة.</i>\n\n"
@@ -192,7 +195,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    await bot.session.close()  # مهم جدًا لإغلاق الجلسة
+    await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
