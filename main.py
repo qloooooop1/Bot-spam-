@@ -12,9 +12,9 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")  # ضع التوكن في Environment Variables على Render
-GROUP_ID = -1001224326322  # استبدل بمعرف مجموعتك (super group)
-GROUP_USERNAME = None  # إذا كان للمجموعة يوزرنيم عام، ضعه هنا (اختياري)
+TOKEN = os.getenv("TOKEN")  # تأكد من إضافته في Environment Variables على Render
+GROUP_ID = -1001224326322  # معرف السوبر جروب (ابدأ برقم -100)
+GROUP_USERNAME = None  # ضع يوزرنيم المجموعة إذا كان موجودًا (اختياري)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# تحويل الأرقام العربية/فارسية/هندية إلى لاتينية
+# تحويل الأرقام العربية/فارسية/هندية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
         '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
@@ -34,7 +34,7 @@ def normalize_digits(text: str) -> str:
 # أنماط الكشف عن السبام
 PHONE_PATTERN = re.compile(r'(?:\+?\d{1,4}[\s\W_*/.-]?)?(?:\(\d{1,4}\)[\s\W_*/.-]?)?\d{3,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,9}(?!\d)')
 PHONE_CONTEXT_PATTERN = re.compile(
-    r'(?:اتصل|رقمي|واتس|هاتف|موبايل|mobile|phone|call|contact|whatsapp|واتساب|📞|☎️|اسمي|فلان)[\s\W_*/]{0,10}'
+    r'(?:اتصل|رقمي|واتس|هاتف|موبايل|mobile|phone|call|contact|whatsapp|واتساب|📞|☎️)[\s\W_*/]{0,10}'
     r'(?:\+?\d{1,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,9})',
     re.IGNORECASE | re.UNICODE
 )
@@ -43,12 +43,12 @@ TELEGRAM_INVITE_PATTERN = re.compile(
     r'(?:https?://)?t\.me/(?:joinchat/|[+])[\w-]{10,}|(?:https?://)?t\.me/(?!' + (GROUP_USERNAME or '') + r')[^\s/]+',
     re.IGNORECASE
 )
-TIKTOK_PATTERN = re.compile(r'(?:https?://)?(?:vm\.|www\.)?tiktok\.com/[^\s]*|@[\w]+\s*tiktok', re.IGNORECASE)
-SHORT_LINK_PATTERN = re.compile(r'(?:https?://)?(bit\.ly|tinyurl\.com|goo\.gl|t\.co|short\.link)/[^\s]*', re.IGNORECASE)
+TIKTOK_PATTERN = re.compile(r'(?:https?://)?(?:vm\.|www\.)?tiktok\.com/[^\s]*', re.IGNORECASE)
+SHORT_LINK_PATTERN = re.compile(r'(?:https?://)?(bit\.ly|tinyurl\.com|goo\.gl|t\.co)/[^\s]*', re.IGNORECASE)
 
 ALLOWED_DOMAINS = ["youtube.com", "youtu.be", "instagram.com", "instagr.am", "x.com", "twitter.com"]
 
-# متابعة المخالفات
+# تتبع المخالفات
 violations = {}
 last_violation = {}
 
@@ -66,7 +66,7 @@ def contains_spam(text: str) -> bool:
 
     normalized = normalize_digits(text)
 
-    # كشف أرقام الهواتف
+    # أرقام الهواتف
     phones = PHONE_PATTERN.findall(normalized)
     if phones:
         clean_phones = [''.join(re.findall(r'\d+', p)) for p in phones]
@@ -82,14 +82,14 @@ def contains_spam(text: str) -> bool:
         SHORT_LINK_PATTERN.search(text)):
         return True
 
-    # كشف روابط غير مسموحة
+    # روابط غير مسموحة
     urls = re.findall(r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.[^\s]{2,}', text, re.IGNORECASE)
     for url in urls:
         clean_url = url.replace(' ', '').lower()
         if not any(domain in clean_url for domain in ALLOWED_DOMAINS):
             return True
 
-    # مزيج رقم + رابط
+    # رقم + رابط معًا
     has_phone = bool(PHONE_PATTERN.search(normalized))
     has_link = bool(re.search(r'https?://|www\.|[^\s]+\.[^\s/]+', text, re.IGNORECASE))
     if has_phone and has_link:
@@ -97,7 +97,7 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# معالج الرسائل في المجموعة
+# فحص الرسائل في المجموعة
 @dp.message()
 async def check_message(message: types.Message):
     if message.chat.id != GROUP_ID:
@@ -111,14 +111,13 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة المخالفة
+    # حذف الرسالة
     try:
         await message.delete()
     except:
         pass
 
     now = datetime.now()
-    # إعادة تصفير العداد بعد 7 أيام
     if user_id in last_violation and now - last_violation[user_id] > timedelta(days=7):
         violations[user_id] = 0
 
@@ -161,7 +160,7 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except:
         pass
 
-# أمر /start في المحادثة الخاصة
+# أمر /start في الخاص
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
     intro_text = (
@@ -197,10 +196,21 @@ async def on_startup():
 async def on_shutdown():
     await bot.session.close()
 
+# الطريقة الصحيحة لمعالجة التحديثات في FastAPI + aiogram 3.x
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
-    update = types.Update.model_validate(await request.json(), from_attributes=True)
-    await dp.feed_update(bot=bot, update=update)
+    try:
+        update_dict = await request.json()
+        update = types.Update(**update_dict)
+        
+        # ضروري جدًا
+        Bot.set_current(bot)
+        Dispatcher.set_current(dp)
+        
+        await dp.process_update(update)
+    except Exception as e:
+        logger.error(f"خطأ في معالجة التحديث: {e}")
+    
     return Response(content="OK", status_code=200)
 
 @app.get("/")
