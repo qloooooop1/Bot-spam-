@@ -14,7 +14,7 @@ from aiogram.filters import CommandStart
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")  # تأكد من وضعه في Environment Variables على Render
 GROUP_ID = -1001224326322  # معرف السوبر جروب
-GROUP_USERNAME = None  # اختياري: يوزرنيم المجموعة إذا كان موجودًا
+GROUP_USERNAME = None  # اختياري
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# تحويل الأرقام العربية/فارسية/هندية إلى لاتينية
+# تحويل الأرقام العربية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
         '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
@@ -47,7 +47,6 @@ SHORT_LINK_PATTERN = re.compile(r'(?:https?://)?(bit\.ly|tinyurl\.com|goo\.gl|t\
 
 ALLOWED_DOMAINS = ["youtube.com", "youtu.be", "instagram.com", "instagr.am", "x.com", "twitter.com"]
 
-# تتبع المخالفات
 violations = {}
 last_violation = {}
 
@@ -64,7 +63,6 @@ def contains_spam(text: str) -> bool:
 
     normalized = normalize_digits(text)
 
-    # أرقام الهواتف
     phones = PHONE_PATTERN.findall(normalized)
     if phones:
         clean_phones = [''.join(re.findall(r'\d+', p)) for p in phones]
@@ -80,14 +78,12 @@ def contains_spam(text: str) -> bool:
         SHORT_LINK_PATTERN.search(text)):
         return True
 
-    # روابط غير مسموحة
     urls = re.findall(r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.[^\s]{2,}', text, re.IGNORECASE)
     for url in urls:
         clean_url = url.replace(' ', '').lower()
         if not any(domain in clean_url for domain in ALLOWED_DOMAINS):
             return True
 
-    # رقم + رابط معًا
     has_phone = bool(PHONE_PATTERN.search(normalized))
     has_link = bool(re.search(r'https?://|www\.|[^\s]+\.[^\s/]+', text, re.IGNORECASE))
     if has_phone and has_link:
@@ -95,7 +91,6 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# فحص الرسائل في المجموعة
 @dp.message()
 async def check_message(message: types.Message):
     if message.chat.id != GROUP_ID:
@@ -109,7 +104,6 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة المخالفة
     try:
         await message.delete()
     except:
@@ -158,7 +152,6 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except:
         pass
 
-# أمر /start في المحادثة الخاصة
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
     intro_text = (
@@ -178,7 +171,8 @@ async def start_command(message: types.Message):
 # ================== FastAPI Webhook ==================
 app = FastAPI()
 
-WEBHOOK_PATH = "/webhook"
+# مسار آمن يحتوي على التوكن (الحل الشائع والناجح على Render)
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 
 @app.on_event("startup")
@@ -194,7 +188,6 @@ async def on_startup():
 async def on_shutdown():
     await bot.session.close()
 
-# الطريقة الصحيحة لمعالجة التحديثات في aiogram 3.x الحديث
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     try:
