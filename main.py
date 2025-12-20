@@ -12,18 +12,17 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")  # تأكد من إضافته في Environment Variables على Render
-GROUP_ID = -1001224326322  # معرف السوبر جروب (ابدأ برقم -100)
-GROUP_USERNAME = None  # ضع يوزرنيم المجموعة إذا كان موجودًا (اختياري)
+TOKEN = os.getenv("TOKEN")  # تأكد من وضعه في Environment Variables على Render
+GROUP_ID = -1001224326322  # معرف السوبر جروب (يبدأ بـ -100)
+GROUP_USERNAME = None  # اختياري: ضع يوزرنيم المجموعة إذا كان موجودًا
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# إعداد البوت
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# تحويل الأرقام العربية/فارسية/هندية
+# تحويل الأرقام العربية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
         '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
@@ -56,8 +55,7 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in ("administrator", "creator")
-    except Exception as e:
-        logger.error(f"خطأ في التحقق من الأدمن: {e}")
+    except Exception:
         return False
 
 def contains_spam(text: str) -> bool:
@@ -111,7 +109,7 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة
+    # حذف الرسالة المخالفة
     try:
         await message.delete()
     except:
@@ -160,7 +158,7 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except:
         pass
 
-# أمر /start في الخاص
+# أمر /start في المحادثة الخاصة
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
     intro_text = (
@@ -196,21 +194,15 @@ async def on_startup():
 async def on_shutdown():
     await bot.session.close()
 
-# الطريقة الصحيحة لمعالجة التحديثات في FastAPI + aiogram 3.x
+# الطريقة الصحيحة والحديثة لمعالجة التحديثات (تعمل مع aiogram 3.13+)
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     try:
         update_dict = await request.json()
         update = types.Update(**update_dict)
-        
-        # ضروري جدًا
-        Bot.set_current(bot)
-        Dispatcher.set_current(dp)
-        
-        await dp.process_update(update)
+        await dp.feed_update(bot=bot, update=update)
     except Exception as e:
         logger.error(f"خطأ في معالجة التحديث: {e}")
-    
     return Response(content="OK", status_code=200)
 
 @app.get("/")
