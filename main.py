@@ -13,8 +13,8 @@ from aiogram.filters import CommandStart
 
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")  # تأكد من وضعه في Environment Variables على Render
-GROUP_ID = -1001224326322  # معرف السوبر جروب (يبدأ بـ -100)
-GROUP_USERNAME = None  # اختياري: ضع يوزرنيم المجموعة إذا كان موجودًا
+GROUP_ID = -1001224326322  # معرف السوبر جروب
+GROUP_USERNAME = None  # اختياري: يوزرنيم المجموعة إذا كان موجودًا
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# تحويل الأرقام العربية إلى لاتينية
+# تحويل الأرقام العربية/فارسية/هندية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
         '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
@@ -194,12 +194,12 @@ async def on_startup():
 async def on_shutdown():
     await bot.session.close()
 
-# الطريقة الصحيحة والحديثة لمعالجة التحديثات (تعمل مع aiogram 3.13+)
+# الطريقة الصحيحة لمعالجة التحديثات في aiogram 3.x الحديث
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     try:
         update_dict = await request.json()
-        update = types.Update(**update_dict)
+        update = types.Update.model_validate(update_dict, context={"bot": bot})
         await dp.feed_update(bot=bot, update=update)
     except Exception as e:
         logger.error(f"خطأ في معالجة التحديث: {e}")
