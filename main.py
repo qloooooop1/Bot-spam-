@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
@@ -30,13 +30,22 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
-# أنماط الكشف عن السبام
-PHONE_PATTERN = re.compile(r'(?:\+?\d{1,4}[\s\W_*/.-]?)?(?:\(\d{1,4}\)[\s\W_*/.-]?)?\d{3,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,9}(?!\d)')
+# أنماط الكشف عن السبام (محدثة ومحسنة)
+PHONE_PATTERN = re.compile(
+    r'(?:\+966|\+9665|00966|009665|966|9665|05|5)'  # البادئات الشائعة (+966, 05, 5 إلخ)
+    r'[\s\W_*/.-]*'
+    r'(?:5|0|3|4|6|7|8|9|1)'  # الأرقام الشائعة للشبكات السعودية/خليجية
+    r'\d{7}'  # 7 أرقام المتبقية
+    r'(?!\d)',  # لا يتبعها أرقام إضافية
+    re.IGNORECASE
+)
+
 PHONE_CONTEXT_PATTERN = re.compile(
     r'(?:اتصل|رقمي|واتس|هاتف|موبايل|mobile|phone|call|contact|whatsapp|واتساب|📞|☎️)[\s\W_*/]{0,10}'
-    r'(?:\+?\d{1,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,4}[\s\W_*/.-]?\d{3,9})',
+    r'(?:\+\d{1,4}[\s\W_*/.-]*\d{5,15}|\d{9,15})',
     re.IGNORECASE | re.UNICODE
 )
+
 WHATSAPP_INVITE_PATTERN = re.compile(r'(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/[^\s]*|\+\w{8,}', re.IGNORECASE)
 TELEGRAM_INVITE_PATTERN = re.compile(
     r'(?:https?://)?t\.me/(?:joinchat/|[+])[\w-]{10,}|(?:https?://)?t\.me/(?!' + (GROUP_USERNAME or '') + r')[^\s/]+',
@@ -46,10 +55,6 @@ TIKTOK_PATTERN = re.compile(r'(?:https?://)?(?:vm\.|www\.)?tiktok\.com/[^\s]*', 
 SHORT_LINK_PATTERN = re.compile(r'(?:https?://)?(bit\.ly|tinyurl\.com|goo\.gl|t\.co)/[^\s]*', re.IGNORECASE)
 
 ALLOWED_DOMAINS = ["youtube.com", "youtu.be", "instagram.com", "instagr.am", "x.com", "twitter.com"]
-
-# تتبع المخالفات
-violations = {}
-last_violation = {}
 
 async def is_admin(chat_id: int, user_id: int) -> bool:
     try:
@@ -64,12 +69,9 @@ def contains_spam(text: str) -> bool:
 
     normalized = normalize_digits(text)
 
-    # أرقام الهواتف
-    phones = PHONE_PATTERN.findall(normalized)
-    if phones:
-        clean_phones = [''.join(re.findall(r'\d+', p)) for p in phones]
-        if any(len(p) >= 9 for p in clean_phones):
-            return True
+    # كشف أرقام الهواتف (محسن جدًا للأرقام بدون صفر)
+    if PHONE_PATTERN.search(normalized):
+        return True
 
     if PHONE_CONTEXT_PATTERN.search(normalized):
         return True
@@ -115,38 +117,20 @@ async def check_message(message: types.Message):
     except:
         pass
 
-    now = datetime.now()
-    if user_id in last_violation and now - last_violation[user_id] > timedelta(days=7):
-        violations[user_id] = 0
+    # حظر مباشر فوري (بدون كتم أو عداد)
+    try:
+        await bot.ban_chat_member(GROUP_ID, user_id)
+    except:
+        pass
 
-    violations[user_id] = violations.get(user_id, 0) + 1
-    last_violation[user_id] = now
-    count = violations[user_id]
     full_name = message.from_user.full_name
 
-    if count == 1:
-        await bot.restrict_chat_member(
-            chat_id=GROUP_ID,
-            user_id=user_id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=datetime.now() + timedelta(days=1)
-        )
-        notification = (
-            f"⚠️ <b>تم كتم العضو مؤقتاً</b>\n\n"
-            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-            f"📛 السبب: نشر رقم هاتف أو رابط مشبوه\n"
-            f"⏳ المدة: 24 ساعة\n"
-            f"🔄 التكرار يؤدي إلى الحظر الدائم"
-        )
-    else:
-        await bot.ban_chat_member(GROUP_ID, user_id)
-        violations.pop(user_id, None)
-        notification = (
-            f"🚫 <b>تم حظر العضو نهائياً</b>\n\n"
-            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-            f"📛 السبب: تكرار نشر سبام\n"
-            f"🛡️ المجموعة محمية"
-        )
+    notification = (
+        f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n"
+        f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
+        f"📛 السبب: نشر سبام (رقم هاتف أو رابط مشبوه)\n"
+        f"🛡️ المجموعة محمية"
+    )
 
     notify_msg = await bot.send_message(GROUP_ID, notification)
     asyncio.create_task(delete_after_delay(notify_msg, 120))
@@ -158,7 +142,7 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except:
         pass
 
-# أمر /start في المحادثة الخاصة
+# أمر /start في المحادثة الخاصة (لم يتم تغييره)
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
     intro_text = (
@@ -178,7 +162,6 @@ async def start_command(message: types.Message):
 # ================== FastAPI Webhook ==================
 app = FastAPI()
 
-# مسار آمن وناجح جدًا على Render
 WEBHOOK_PATH = f"/bot/{TOKEN}"
 WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 
