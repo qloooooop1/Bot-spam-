@@ -6,14 +6,17 @@ from datetime import datetime
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")  # تأكد من وضعه في Environment Variables على Render
-GROUP_ID = -1001224326322  # معرف السوبر جروب (ابدأ بـ -100)
+
+# قائمة المجموعات التي يعمل فيها البوت (أضف هنا أي مجموعة جديدة)
+ALLOWED_GROUP_IDS = [-1001224326322, -1002370282238]
+
 GROUP_USERNAME = None  # اختياري: يوزرنيم المجموعة إذا كان موجودًا
 
 logging.basicConfig(level=logging.INFO)
@@ -30,13 +33,13 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
-# أنماط الكشف عن السبام (محدثة ومحسنة)
+# أنماط الكشف عن السبام (محسنة للأرقام السعودية والخليجية)
 PHONE_PATTERN = re.compile(
-    r'(?:\+966|\+9665|00966|009665|966|9665|05|5)'  # البادئات الشائعة (+966, 05, 5 إلخ)
+    r'(?:\+966|\+9665|00966|009665|966|9665|05|5)'  
     r'[\s\W_*/.-]*'
-    r'(?:5|0|3|4|6|7|8|9|1)'  # الأرقام الشائعة للشبكات السعودية/خليجية
-    r'\d{7}'  # 7 أرقام المتبقية
-    r'(?!\d)',  # لا يتبعها أرقام إضافية
+    r'(?:5|0|3|4|6|7|8|9|1)'  
+    r'\d{7}'  
+    r'(?!\d)',  
     re.IGNORECASE
 )
 
@@ -63,13 +66,19 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
     except Exception:
         return False
 
+async def is_banned(chat_id: int, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status in ("kicked", "banned", "left")
+    except Exception:
+        return True  # إذا حصل خطأ (مثل العضو محظور بالفعل) نفترض أنه محظور
+
 def contains_spam(text: str) -> bool:
     if not text:
         return False
 
     normalized = normalize_digits(text)
 
-    # كشف أرقام الهواتف (محسن جدًا للأرقام بدون صفر)
     if PHONE_PATTERN.search(normalized):
         return True
 
@@ -97,52 +106,69 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# فحص الرسائل في المجموعة
+# فحص الرسائل في المجموعات المسموحة
 @dp.message()
 async def check_message(message: types.Message):
-    if message.chat.id != GROUP_ID:
+    if message.chat.id not in ALLOWED_GROUP_IDS:
         return
 
     user_id = message.from_user.id
-    if await is_admin(GROUP_ID, user_id):
+    chat_id = message.chat.id
+
+    if await is_admin(chat_id, user_id):
         return
 
     text = (message.text or message.caption or "").strip()
     if not contains_spam(text):
         return
 
-    # حذف الرسالة المخالفة
+    # حذف الرسالة المخالفة (دائمًا)
     try:
         await message.delete()
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    # حظر مباشر فوري (بدون كتم أو عداد)
-    try:
-        await bot.ban_chat_member(GROUP_ID, user_id)
-    except:
-        pass
+    # حظر فقط إذا لم يكن محظورًا بالفعل
+    if not await is_banned(chat_id, user_id):
+        try:
+            await bot.ban_chat_member(chat_id, user_id)
+            banned = True
+        except Exception as e:
+            logger.warning(f"فشل حظر العضو {user_id}: {e}")
+            banned = False
+    else:
+        banned = False  # محظور مسبقًا
 
     full_name = message.from_user.full_name
 
-    notification = (
-        f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n"
-        f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-        f"📛 السبب: نشر سبام (رقم هاتف أو رابط مشبوه)\n"
-        f"🛡️ المجموعة محمية"
-    )
+    if banned:
+        notification = (
+            f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n"
+            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
+            f"📛 السبب: نشر سبام (رقم هاتف أو رابط مشبوه)\n"
+            f"🛡️ المجموعة محمية"
+        )
+    else:
+        notification = (
+            f"🗑️ <b>تم حذف رسالة سبام</b>\n\n"
+            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
+            f"⚠️ العضو محظور مسبقًا أو تم حظره"
+        )
 
-    notify_msg = await bot.send_message(GROUP_ID, notification)
-    asyncio.create_task(delete_after_delay(notify_msg, 120))
+    try:
+        notify_msg = await bot.send_message(chat_id, notification)
+        asyncio.create_task(delete_after_delay(notify_msg, 120))
+    except Exception as e:
+        logger.warning(f"فشل إرسال الإشعار: {e}")
 
 async def delete_after_delay(message: types.Message, delay: int = 120):
     await asyncio.sleep(delay)
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
 
-# أمر /start في المحادثة الخاصة (لم يتم تغييره)
+# أمر /start في المحادثة الخاصة
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
     intro_text = (
