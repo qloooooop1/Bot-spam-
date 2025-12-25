@@ -9,12 +9,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command  # أضف هذا الإمبورت
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")  # تأكد من أنه في Environment Variables على Render
+TOKEN = os.getenv("TOKEN")
 
-# قائمة المجموعات المسموحة
 ALLOWED_GROUP_IDS = [-1001224326322, -1002370282238]
 
 GROUP_USERNAME = None
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# تحويل الأرقام العربية/فارسية/هندية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
         '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
@@ -33,7 +31,6 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
-# أنماط كشف السبام (محسنة لكل الحيل مثل 0/5/6/9/6/6/7/0)
 PHONE_PATTERN = re.compile(
     r'(?:\+?966|00966|966|05|5|0)?'
     r'(\d[\s\W_*/.-]*){8,12}',
@@ -101,10 +98,8 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# معالجة جميع الرسائل
 @dp.message()
 async def check_message(message: types.Message):
-    # الرد على الرسائل في الخاص (فقط إذا لم تكن /start)
     if message.chat.type == 'private':
         if not message.text or not message.text.lstrip().startswith('/start'):
             contact_text = (
@@ -120,9 +115,8 @@ async def check_message(message: types.Message):
             ])
 
             await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
-        return  # نخرج مباشرة للرسائل الخاصة
+        return
 
-    # تجاهل المجموعات غير المسجلة
     if message.chat.id not in ALLOWED_GROUP_IDS:
         return
 
@@ -136,13 +130,11 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة المخالفة
     try:
         await message.delete()
     except Exception as e:
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    # حظر العضو إذا لم يكن محظورًا
     if not await is_banned(chat_id, user_id):
         try:
             await bot.ban_chat_member(chat_id, user_id)
@@ -182,10 +174,10 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except Exception:
         pass
 
-# أمر /start في الخاص (هذا الآن سيعمل بشكل مستقل)
-@dp.message(CommandStart())
+# التعديل الرئيسي: يقبل /start مع أو بدون payload (مثل الزر الأزرق)
+@dp.message(Command(commands=["start"]))
 async def start_command(message: types.Message):
-    logger.info(f"Received /start from user {message.from_user.id}")
+    logger.info(f"Received /start (including blue button) from user {message.from_user.id}")
 
     intro_text = (
         "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
@@ -202,7 +194,6 @@ async def start_command(message: types.Message):
 
     await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
 
-# معالجة الضغط على زر "معلومات إضافية"
 @dp.callback_query()
 async def handle_callback_query(callback: types.CallbackQuery):
     if callback.data == "more_info":
@@ -227,7 +218,6 @@ async def handle_callback_query(callback: types.CallbackQuery):
         await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
         await callback.answer()
 
-# ================== FastAPI Webhook ==================
 app = FastAPI()
 
 WEBHOOK_PATH = f"/bot/{TOKEN}"
