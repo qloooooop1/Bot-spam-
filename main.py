@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+# تحويل الأرقام العربية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
         '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
@@ -30,6 +31,7 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
+# أنماط كشف السبام
 PHONE_PATTERN = re.compile(
     r'(?:\+?966|00966|966|05|5|0)?'
     r'(\d[\s\W_*/.-]*){8,12}',
@@ -97,15 +99,55 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# معالجة الرسائل العامة (مجموعات + خاص غير /start)
+# ================== handler /start أولاً (الحل النهائي) ==================
+@dp.message(Command(commands=["start"]))
+async def start_command(message: types.Message):
+    logger.info(f"تم استلام /start من {message.from_user.id}")
+
+    intro_text = (
+        "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
+        "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع حظر فوري للمخالفين.</i>\n\n"
+        "📌 <b>ملاحظة:</b> البوت يعمل فقط في المجموعات المسجلة لدينا.\n\n"
+        "🌟 لتسجيل مجموعتك أو لأي استفسار، تواصل معنا من الزر أدناه 👇"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 تسجيل مجموعتك الآن", url="https://t.me/ql_om")],
+        [InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")],
+        [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
+    ])
+
+    await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
+
+# ================== handler الـ callback ==================
+@dp.callback_query()
+async def handle_callback_query(callback: types.CallbackQuery):
+    if callback.data == "more_info":
+        more_info_text = (
+            "🛡️ <b>معلومات إضافية عن بوت الحارس الأمني</b>\n\n"
+            "🔥 <b>ما هو البوت وكيف يعمل؟</b>\n"
+            "هذا البوت الذكي مصمم لحماية مجموعات التيليجرام من جميع أنواع السبام والمحتوى المزعج. يعتمد على تقنيات متقدمة لكشف الأرقام الهواتف (حتى المخفية مثل 0/5/6/9/6/6/7/0)، الروابط المشبوهة، والرسائل المكررة. يقوم بحذف الرسالة فورًا وحظر العضو نهائيًا من أول مخالفة! 🚫\n\n"
+            "🛡️ <b>مميزات الحماية:</b>\n"
+            "• 📞 كشف الأرقام بكل الحيل\n"
+            "• 🔗 منع الروابط المشبوهة\n"
+            "• 🔄 حظر فوري بدون كتم\n"
+            "• 📢 إشعارات مؤقتة\n\n"
+            "⚠️ <b>التفعيل:</b> يتطلب تسجيل المجموعة لدينا.\n\n"
+            "📩 تواصل معنا للتسجيل 👇"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📞 تواصل معنا للتسجيل", url="https://t.me/ql_om")]
+        ])
+
+        await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
+        await callback.answer()
+
+# ================== handler العام لكل الرسائل الأخرى (آخر شيء) ==================
 @dp.message()
 async def check_message(message: types.Message):
+    # الخاص: رد على أي رسالة (غير /start لأنه معالج بالفعل فوق)
     if message.chat.type == 'private':
-        # إذا كانت الرسالة تبدأ بـ "/start" بالضبط (مع السلاش قدام s) → نتركها للـ handler الخاص
-        if message.text and message.text.strip().startswith('/start'):
-            return
-
-        # أي رسالة أخرى في الخاص (مثل "هلا" أو "S" أو أي شيء عشوائي) → رد التواصل
         contact_text = (
             "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
             "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
@@ -121,6 +163,7 @@ async def check_message(message: types.Message):
         await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
         return
 
+    # المجموعات
     if message.chat.id not in ALLOWED_GROUP_IDS:
         return
 
@@ -178,49 +221,7 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except Exception:
         pass
 
-# handler خاص لـ /start (يعمل مع الزر الأزرق، الكتابة اليدوية، مع أو بدون payload)
-@dp.message(Command(commands=["start"]))
-async def start_command(message: types.Message):
-    logger.info(f"تم استلام /start من {message.from_user.id}")
-
-    intro_text = (
-        "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
-        "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع حظر فوري للمخالفين.</i>\n\n"
-        "📌 <b>ملاحظة:</b> البوت يعمل فقط في المجموعات المسجلة لدينا.\n\n"
-        "🌟 لتسجيل مجموعتك أو لأي استفسار، تواصل معنا من الزر أدناه 👇"
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 تسجيل مجموعتك الآن", url="https://t.me/ql_om")],
-        [InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")],
-        [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
-    ])
-
-    await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
-
-@dp.callback_query()
-async def handle_callback_query(callback: types.CallbackQuery):
-    if callback.data == "more_info":
-        more_info_text = (
-            "🛡️ <b>معلومات إضافية عن بوت الحارس الأمني</b>\n\n"
-            "🔥 <b>ما هو البوت وكيف يعمل؟</b>\n"
-            "هذا البوت الذكي مصمم لحماية مجموعات التيليجرام من جميع أنواع السبام والمحتوى المزعج. يعتمد على تقنيات متقدمة لكشف الأرقام الهواتف (حتى المخفية مثل 0/5/6/9/6/6/7/0)، الروابط المشبوهة، والرسائل المكررة. يقوم بحذف الرسالة فورًا وحظر العضو نهائيًا من أول مخالفة! 🚫\n\n"
-            "🛡️ <b>مميزات الحماية:</b>\n"
-            "• 📞 كشف الأرقام بكل الحيل\n"
-            "• 🔗 منع الروابط المشبوهة\n"
-            "• 🔄 حظر فوري بدون كتم\n"
-            "• 📢 إشعارات مؤقتة\n\n"
-            "⚠️ <b>التفعيل:</b> يتطلب تسجيل المجموعة لدينا.\n\n"
-            "📩 تواصل معنا للتسجيل 👇"
-        )
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📞 تواصل معنا للتسجيل", url="https://t.me/ql_om")]
-        ])
-
-        await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
-        await callback.answer()
-
+# ================== FastAPI Webhook ==================
 app = FastAPI()
 
 WEBHOOK_PATH = f"/bot/{TOKEN}"
