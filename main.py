@@ -101,11 +101,11 @@ def contains_spam(text: str) -> bool:
 @dp.message()
 async def check_message(message: types.Message):
     if message.chat.type == 'private':
-        # إذا كانت الرسالة تبدأ بـ "/start" (مع السلاش قدام الـ s) → نتركها للـ handler الخاص
-        if message.text and message.text.strip().lower().startswith('/start'):
-            return  # لا نرد، نتركها للـ /start handler
+        # إذا كانت الرسالة تبدأ بـ "/start" بالضبط (مع السلاش قدام s) → نتركها للـ handler الخاص
+        if message.text and message.text.strip().startswith('/start'):
+            return
 
-        # أي رسالة أخرى في الخاص → رد التواصل
+        # أي رسالة أخرى في الخاص (مثل "هلا" أو "S" أو أي شيء عشوائي) → رد التواصل
         contact_text = (
             "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
             "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
@@ -178,10 +178,10 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except Exception:
         pass
 
-# handler خاص لـ /start (يعمل مع الزر الأزرق أو الكتابة اليدوية، مع أو بدون payload)
-@dp.message(Command(commands=["start"], ignore_case=True))
+# handler خاص لـ /start (يعمل مع الزر الأزرق، الكتابة اليدوية، مع أو بدون payload)
+@dp.message(Command(commands=["start"]))
 async def start_command(message: types.Message):
-    logger.info(f"تم استلام /start من {message.from_user.id} (زر أزرق أو يدوي)")
+    logger.info(f"تم استلام /start من {message.from_user.id}")
 
     intro_text = (
         "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
