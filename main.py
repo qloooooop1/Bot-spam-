@@ -12,9 +12,9 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 
 # ================== الإعدادات ==================
-TOKEN = os.getenv("TOKEN")  # تأكد من وضعه في Environment Variables على Render
+TOKEN = os.getenv("TOKEN")  # تأكد من أنه في Environment Variables على Render
 
-# قائمة المجموعات التي يعمل فيها البوت
+# قائمة المجموعات المسموحة
 ALLOWED_GROUP_IDS = [-1001224326322, -1002370282238]
 
 GROUP_USERNAME = None
@@ -33,7 +33,7 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
-# أنماط الكشف عن السبام (محسنة لكشف الحيل المخفية مثل 0/5/6/9/6/6/7/0)
+# أنماط كشف السبام (محسنة لكل الحيل مثل 0/5/6/9/6/6/7/0)
 PHONE_PATTERN = re.compile(
     r'(?:\+?966|00966|966|05|5|0)?'
     r'(\d[\s\W_*/.-]*){8,12}',
@@ -101,32 +101,28 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# معالجة الرسائل في المجموعات
+# معالجة جميع الرسائل
 @dp.message()
 async def check_message(message: types.Message):
-    # إذا كانت الرسالة في محادثة خاصة
+    # الرد على الرسائل في الخاص (فقط إذا لم تكن /start)
     if message.chat.type == 'private':
-        # إذا كانت /start → يعالجها الـ handler الخاص
-        if message.text and message.text.startswith('/start'):
-            return
+        if not message.text or not message.text.lstrip().startswith('/start'):
+            contact_text = (
+                "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
+                "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
+                "📩 <b>للاستفسار أو تسجيل مجموعتك أو طلب النسخة المدفوعة:</b>\n"
+                "تواصل معنا مباشرة من هنا 👇"
+            )
 
-        # رد على أي رسالة أخرى في الخاص برسالة التواصل
-        contact_text = (
-            "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
-            "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
-            "📩 <b>للاستفسار أو تسجيل مجموعتك أو طلب النسخة المدفوعة:</b>\n"
-            "تواصل معنا مباشرة من هنا 👇"
-        )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📞 تواصل معنا الآن", url="https://t.me/ql_om")],
+                [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
+            ])
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📞 تواصل معنا الآن", url="https://t.me/ql_om")],
-            [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
-        ])
+            await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
+        return  # نخرج مباشرة للرسائل الخاصة
 
-        await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
-        return
-
-    # إذا كانت في مجموعة غير مسموحة → تجاهل
+    # تجاهل المجموعات غير المسجلة
     if message.chat.id not in ALLOWED_GROUP_IDS:
         return
 
@@ -140,13 +136,13 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة
+    # حذف الرسالة المخالفة
     try:
         await message.delete()
     except Exception as e:
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    # حظر إذا لم يكن محظورًا
+    # حظر العضو إذا لم يكن محظورًا
     if not await is_banned(chat_id, user_id):
         try:
             await bot.ban_chat_member(chat_id, user_id)
@@ -186,7 +182,7 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except Exception:
         pass
 
-# أمر /start في الخاص
+# أمر /start في الخاص (هذا الآن سيعمل بشكل مستقل)
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
     logger.info(f"Received /start from user {message.from_user.id}")
@@ -206,7 +202,7 @@ async def start_command(message: types.Message):
 
     await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
 
-# معالج للضغط على الزر (callback query)
+# معالجة الضغط على زر "معلومات إضافية"
 @dp.callback_query()
 async def handle_callback_query(callback: types.CallbackQuery):
     if callback.data == "more_info":
@@ -229,7 +225,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
         ])
 
         await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
-        await callback.answer()  # لإغلاق التحميل في الزر
+        await callback.answer()
 
 # ================== FastAPI Webhook ==================
 app = FastAPI()
