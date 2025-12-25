@@ -14,10 +14,10 @@ from aiogram.filters import CommandStart
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")  # تأكد من وضعه في Environment Variables على Render
 
-# قائمة المجموعات التي يعمل فيها البوت (أضف هنا أي مجموعة جديدة)
+# قائمة المجموعات التي يعمل فيها البوت
 ALLOWED_GROUP_IDS = [-1001224326322, -1002370282238]
 
-GROUP_USERNAME = None  # اختياري: يوزرنيم المجموعة إذا كان موجودًا
+GROUP_USERNAME = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
-# أنماط الكشف عن السبام (محسنة لكشف الحيل المخفية)
+# أنماط الكشف عن السبام (محسنة لكشف الحيل المخفية مثل 0/5/6/9/6/6/7/0)
 PHONE_PATTERN = re.compile(
     r'(?:\+?966|00966|966|05|5|0)?'
     r'(\d[\s\W_*/.-]*){8,12}',
@@ -68,7 +68,7 @@ async def is_banned(chat_id: int, user_id: int) -> bool:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in ("kicked", "banned", "left")
     except Exception:
-        return True  # إذا حصل خطأ (مثل العضو محظور بالفعل) نفترض أنه محظور
+        return True
 
 def contains_spam(text: str) -> bool:
     if not text:
@@ -88,14 +88,12 @@ def contains_spam(text: str) -> bool:
         SHORT_LINK_PATTERN.search(text)):
         return True
 
-    # روابط غير مسموحة
     urls = re.findall(r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.[^\s]{2,}', text, re.IGNORECASE)
     for url in urls:
         clean_url = url.replace(' ', '').lower()
         if not any(domain in clean_url for domain in ALLOWED_DOMAINS):
             return True
 
-    # رقم + رابط معًا
     has_phone = bool(PHONE_PATTERN.search(normalized))
     has_link = bool(re.search(r'https?://|www\.|[^\s]+\.[^\s/]+', text, re.IGNORECASE))
     if has_phone and has_link:
@@ -103,13 +101,33 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# فحص الرسائل في المجموعات المسموحة
+# معالجة الرسائل في المجموعات
 @dp.message()
 async def check_message(message: types.Message):
+    # إذا كانت الرسالة في محادثة خاصة
+    if message.chat.type == 'private':
+        # إذا كانت /start → يعالجها الـ handler الخاص
+        if message.text and message.text.startswith('/start'):
+            return
+
+        # رد على أي رسالة أخرى في الخاص برسالة التواصل
+        contact_text = (
+            "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
+            "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
+            "📩 <b>للاستفسار أو تسجيل مجموعتك أو طلب النسخة المدفوعة:</b>\n"
+            "تواصل معنا مباشرة من هنا 👇"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📞 تواصل معنا الآن", url="https://t.me/ql_om")],
+            [InlineKeyboardButton(text="🌟 معلومات إضافية", url="https://t.me/ql_om")]
+        ])
+
+        await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
+        return
+
+    # إذا كانت في مجموعة غير مسموحة → تجاهل
     if message.chat.id not in ALLOWED_GROUP_IDS:
-        # إذا كانت رسالة خاصة غير /start، رد اختباري
-        if message.chat.type == 'private' and not message.text.startswith('/start'):
-            await message.answer("مرحبا! استخدم /start للبدء.")
         return
 
     user_id = message.from_user.id
@@ -122,13 +140,13 @@ async def check_message(message: types.Message):
     if not contains_spam(text):
         return
 
-    # حذف الرسالة المخالفة (دائمًا)
+    # حذف الرسالة
     try:
         await message.delete()
     except Exception as e:
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    # حظر فقط إذا لم يكن محظورًا بالفعل
+    # حظر إذا لم يكن محظورًا
     if not await is_banned(chat_id, user_id):
         try:
             await bot.ban_chat_member(chat_id, user_id)
@@ -137,7 +155,7 @@ async def check_message(message: types.Message):
             logger.warning(f"فشل حظر العضو {user_id}: {e}")
             banned = False
     else:
-        banned = False  # محظور مسبقًا
+        banned = False
 
     full_name = message.from_user.full_name
 
@@ -152,7 +170,7 @@ async def check_message(message: types.Message):
         notification = (
             f"🗑️ <b>تم حذف رسالة سبام</b>\n\n"
             f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-            f"⚠️ العضو محظور مسبقًا أو تم حظره"
+            f"⚠️ العضو محظور مسبقًا"
         )
 
     try:
@@ -168,20 +186,21 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except Exception:
         pass
 
-# أمر /start في المحادثة الخاصة
+# أمر /start في الخاص
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
-    logger.info(f"Received /start from user {message.from_user.id}")  # logging للتتبع
+    logger.info(f"Received /start from user {message.from_user.id}")
+
     intro_text = (
         "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
-        "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع كتم أو حظر المخالفين بطريقة احترافية وسريعة.</i>\n\n"
-        "📌 <b>ملاحظة مهمة:</b> البوت يعمل فقط في المجموعات الخاصة المسجلة لدينا. لتسجيل مجموعتك أو الحصول على مزيد من المعلومات، اضغط على الزر أدناه.\n\n"
-        "🌟 <b>ابدأ الآن واستمتع بحماية فائقة!</b>"
+        "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع حظر فوري للمخالفين.</i>\n\n"
+        "📌 <b>ملاحظة:</b> البوت يعمل فقط في المجموعات المسجلة لدينا.\n\n"
+        "🌟 لتسجيل مجموعتك أو لأي استفسار، تواصل معنا من الزر أدناه 👇"
     )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 تسجيل مجموعتك الآن", url="https://t.me/ql_om")],
-        [InlineKeyboardButton(text="❓ استفسار أو مساعدة", url="https://t.me/ql_om")]
+        [InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")]
     ])
 
     await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
@@ -200,10 +219,6 @@ async def on_startup():
         logger.info(f"Webhook تم تفعيله بنجاح: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"فشل تفعيل الـ webhook: {e}")
-
-# إذا أردت استخدام polling بدلاً من webhook للاختبار (علق الـ webhook واستخدم هذا):
-# async def on_startup():
-#     dp.start_polling(bot)
 
 @app.on_event("shutdown")
 async def on_shutdown():
