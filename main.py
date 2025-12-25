@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command  # مهم جدًا للحل
+from aiogram.filters import Command
 
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")
@@ -100,22 +100,25 @@ def contains_spam(text: str) -> bool:
 # معالجة الرسائل العامة (مجموعات + خاص غير /start)
 @dp.message()
 async def check_message(message: types.Message):
-    # رد على الرسائل في الخاص فقط إذا ما كانتش /start (أي شكل)
     if message.chat.type == 'private':
-        if not message.text or 'start' not in message.text.lower().lstrip('/'):
-            contact_text = (
-                "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
-                "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
-                "📩 <b>للاستفسار أو تسجيل مجموعتك أو طلب النسخة المدفوعة:</b>\n"
-                "تواصل معنا مباشرة من هنا 👇"
-            )
+        # إذا كانت الرسالة تبدأ بـ "/start" (مع السلاش قدام الـ s) → نتركها للـ handler الخاص
+        if message.text and message.text.strip().lower().startswith('/start'):
+            return  # لا نرد، نتركها للـ /start handler
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📞 تواصل معنا الآن", url="https://t.me/ql_om")],
-                [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
-            ])
+        # أي رسالة أخرى في الخاص → رد التواصل
+        contact_text = (
+            "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
+            "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
+            "📩 <b>للاستفسار أو تسجيل مجموعتك أو طلب النسخة المدفوعة:</b>\n"
+            "تواصل معنا مباشرة من هنا 👇"
+        )
 
-            await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📞 تواصل معنا الآن", url="https://t.me/ql_om")],
+            [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
+        ])
+
+        await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
         return
 
     if message.chat.id not in ALLOWED_GROUP_IDS:
@@ -175,10 +178,10 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
     except Exception:
         pass
 
-# الحل النهائي: يقبل /start بأي شكل (زر أزرق، كتابة يدوية، مع payload أو بدون)
+# handler خاص لـ /start (يعمل مع الزر الأزرق أو الكتابة اليدوية، مع أو بدون payload)
 @dp.message(Command(commands=["start"], ignore_case=True))
 async def start_command(message: types.Message):
-    logger.info(f"Received /start (زر أزرق أو يدوي) from user {message.from_user.id}")
+    logger.info(f"تم استلام /start من {message.from_user.id} (زر أزرق أو يدوي)")
 
     intro_text = (
         "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
@@ -201,7 +204,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
         more_info_text = (
             "🛡️ <b>معلومات إضافية عن بوت الحارس الأمني</b>\n\n"
             "🔥 <b>ما هو البوت وكيف يعمل؟</b>\n"
-            "هذا البوت الذكي مصمم لحماية مجموعات التيليجرام من جميع أنواع السبام والمحتوى المزعج. يعتمد على تقنيات متقدمة لكشف الأرقام الهواتف (حتى المخفية مثل 0/5/6/9/6/6/7/0 أو بأي شكل آخر)، الروابط المشبوهة، والرسائل المكررة. يقوم بحذف الرسالة فورًا وحظر العضو نهائيًا من أول مخالفة! 🚫\n\n"
+            "هذا البوت الذكي مصمم لحماية مجموعات التيليجرام من جميع أنواع السبام والمحتوى المزعج. يعتمد على تقنيات متقدمة لكشف الأرقام الهواتف (حتى المخفية مثل 0/5/6/9/6/6/7/0)، الروابط المشبوهة، والرسائل المكررة. يقوم بحذف الرسالة فورًا وحظر العضو نهائيًا من أول مخالفة! 🚫\n\n"
             "🛡️ <b>مميزات الحماية:</b>\n"
             "• 📞 كشف الأرقام بكل الحيل\n"
             "• 🔗 منع الروابط المشبوهة\n"
