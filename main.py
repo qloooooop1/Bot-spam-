@@ -33,13 +33,10 @@ def normalize_digits(text: str) -> str:
     )
     return text.translate(trans)
 
-# أنماط الكشف عن السبام (محسنة للأرقام السعودية والخليجية)
+# أنماط الكشف عن السبام (محسنة لكشف الحيل المخفية)
 PHONE_PATTERN = re.compile(
-    r'(?:\+966|\+9665|00966|009665|966|9665|05|5)'  
-    r'[\s\W_*/.-]*'
-    r'(?:5|0|3|4|6|7|8|9|1)'  
-    r'\d{7}'  
-    r'(?!\d)',  
+    r'(?:\+?966|00966|966|05|5|0)?'
+    r'(\d[\s\W_*/.-]*){8,12}',
     re.IGNORECASE
 )
 
@@ -110,6 +107,9 @@ def contains_spam(text: str) -> bool:
 @dp.message()
 async def check_message(message: types.Message):
     if message.chat.id not in ALLOWED_GROUP_IDS:
+        # إذا كانت رسالة خاصة غير /start، رد اختباري
+        if message.chat.type == 'private' and not message.text.startswith('/start'):
+            await message.answer("مرحبا! استخدم /start للبدء.")
         return
 
     user_id = message.from_user.id
@@ -171,6 +171,7 @@ async def delete_after_delay(message: types.Message, delay: int = 120):
 # أمر /start في المحادثة الخاصة
 @dp.message(CommandStart())
 async def start_command(message: types.Message):
+    logger.info(f"Received /start from user {message.from_user.id}")  # logging للتتبع
     intro_text = (
         "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
         "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع كتم أو حظر المخالفين بطريقة احترافية وسريعة.</i>\n\n"
@@ -199,6 +200,10 @@ async def on_startup():
         logger.info(f"Webhook تم تفعيله بنجاح: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"فشل تفعيل الـ webhook: {e}")
+
+# إذا أردت استخدام polling بدلاً من webhook للاختبار (علق الـ webhook واستخدم هذا):
+# async def on_startup():
+#     dp.start_polling(bot)
 
 @app.on_event("shutdown")
 async def on_shutdown():
