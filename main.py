@@ -106,9 +106,7 @@ def contains_spam(text: str) -> bool:
     return False
 
 # إعدادات البوت
-settings = {}  # {group_id_str: {'mode': ..., 'mute_duration': ...}}
-violations = {}  # {group_id: {user_id: count}}
-
+settings = {}  # {group_id_str: {'mode': ..., 'mute_duration': ..., 'violations': {user_id: count}}}
 temp_duration = {}  # مؤقت لتحرير المدة
 
 unit_seconds = {
@@ -121,10 +119,6 @@ unit_seconds = {
 
 unit_to_text_dict = {'minute': 'دقيقة', 'hour': 'ساعة', 'day': 'يوم', 'month': 'شهر', 'year': 'سنة'}
 
-# تهيئة violations
-for gid in ALLOWED_GROUP_IDS:
-    violations[gid] = {}
-
 def seconds_to_value_unit(seconds: int):
     if seconds == 0:
         return 0, 'minute'
@@ -134,20 +128,20 @@ def seconds_to_value_unit(seconds: int):
             return value, unit
     return seconds // 60, 'minute'
 
-# ================== وظائف قاعدة البيانات في تيليجرام (مُصلحة وأوتوماتيكية) ==================
+# ================== وظائف قاعدة البيانات في تيليجرام ==================
 async def load_settings_from_tg():
     global settings, SETTINGS_MESSAGE_ID
-    # الإعدادات الافتراضية
     settings = {}
     for gid in ALLOWED_GROUP_IDS:
         group_str = str(gid)
-        settings[group_str] = {'mode': 'ban', 'mute_duration': 86400}
+        settings[group_str] = {
+            'mode': 'ban',
+            'mute_duration': 86400,
+            'violations': {}
+        }
 
     try:
-        # رسالة مؤقتة لمعرفة آخر message_id
         dummy_msg = await bot.send_message(DB_CHAT_ID, "🔄 جاري تحميل إعدادات البوت...")
-        
-        # جلب آخر 50 رسالة (كافية جدًا)
         history = []
         offset_id = 0
         while len(history) < 50:
@@ -159,7 +153,6 @@ async def load_settings_from_tg():
                 break
             offset_id = msgs[-1].message_id + 1
 
-        # البحث عن رسالة JSON
         json_msg = None
         for msg in reversed(history):
             if msg.text and msg.text.strip().startswith('{') and msg.text.strip().endswith('}'):
@@ -172,14 +165,18 @@ async def load_settings_from_tg():
                     continue
 
         if json_msg:
-            settings.update(json.loads(json_msg.text))
+            loaded = json.loads(json_msg.text)
+            for group_str in settings:
+                if group_str in loaded:
+                    settings[group_str].update(loaded[group_str])
+                    if 'violations' not in settings[group_str]:
+                        settings[group_str]['violations'] = {}
             SETTINGS_MESSAGE_ID = json_msg.message_id
             logger.info(f"تم تحميل الإعدادات من الرسالة ID: {SETTINGS_MESSAGE_ID}")
         else:
             logger.info("لم يتم العثور على إعدادات سابقة → إنشاء جديدة")
             await save_settings_to_tg()
 
-        # حذف الرسالة المؤقتة
         await bot.delete_message(DB_CHAT_ID, dummy_msg.message_id)
 
     except Exception as e:
@@ -246,25 +243,39 @@ async def start_command(message: types.Message):
 @dp.callback_query()
 async def handle_callback_query(callback: types.CallbackQuery):
     data = callback.data
-
     if data == "more_info":
         more_info_text = (
             "🛡️ <b>تفاصيل كاملة عن بوت «الحارس الأمني» الذكي</b>\n\n"
-            "🔥 <b>ما هو البوت وما هدفه؟</b>\n"
-            "الحارس الأمني هو بوت حماية متقدم وذكي مصمم خصيصًا لحماية مجموعات التيليجرام الكبيرة والصغيرة من جميع أنواع السبام والمحتوى المزعج. يعمل تلقائيًا 24/7 دون تدخل يدوي، ويستخدم خوارزميات ذكية لكشف المخالفات بدقة عالية جدًا، مع التركيز على الحماية الفورية والفعالة.\n\n"
-            "🛡️ <b>كيف يحمي البوت مجموعتك؟</b>\n"
-            "• <b>كشف الأرقام الهواتف بذكاء فائق:</b> يكشف الأرقام حتى لو كانت مخفية بكل الحيل الشائعة.\n\n"
-            "• <b>منع الروابط المشبوهة تمامًا:</b> يحظر روابط الواتساب الجماعية، التيك توك، إلخ. يسمح فقط بالموثوقة.\n\n"
-            "• <b>حظر فوري ونهائي:</b> من أول مخالفة.\n\n"
-            "• <b>إشعارات أنيقة ومؤقتة:</b> تُحذف تلقائيًا بعد دقيقتين.\n\n"
-            "⚙️ <b>لماذا البوت مختلف؟</b>\n"
-            "دقة عالية، سرعة فائقة، تحديثات مستمرة.\n\n"
-            "📩 <b>جاهز للحماية الفائقة؟</b>\n"
-            "تواصل معنا الآن 👇"
+            "🔥 <b>مقدمة عن البوت وهدفه</b>\n"
+            "الحارس الأمني هو نظام حماية متقدم وذكي، مصمم خصيصًا لضمان سلامة ونظافة مجموعات التيليجرام من جميع أشكال السبام والإزعاج. يعمل على مدار 24 ساعة دون توقف، مستخدمًا خوارزميات ذكاء اصطناعي متقدمة لكشف المخالفات بدقة تصل إلى 99.9%، مع التركيز على الحماية الفورية والفعالة للحفاظ على جو مجموعتك آمنًا ومنتظمًا.\n\n"
+            "🛡️ <b>آلية عمل البوت في الحماية</b>\n"
+            "1. <b>كشف الأرقام الهاتفية بدقة فائقة</b>: يكتشف الأرقام حتى لو تم إخفاؤها بأي حيلة (مثل استخدام رموز، مسافات، أو أرقام عربية/فارسية). يركز بشكل خاص على الأرقام السعودية والخليجية مثل +966 أو 05.\n"
+            "2. <b>منع الروابط غير المرغوبة بالكامل</b>: يحظر روابط مجموعات الواتساب، التيك توك، الروابط المختصرة (bit.ly، t.co)، وروابط التيليجرام غير المسموحة. يسمح فقط بالروابط الآمنة مثل يوتيوب، إنستغرام، وتويتر (X).\n"
+            "3. <b>نظام الكتم والحظر المتقدم</b>: في المخالفة الأولى، يمكن كتم العضو لمدة محددة (مثل يوم واحد). أما في المخالفة الثانية، يتم الحظر النهائي فورًا. البوت يتذكر المخالفات حتى بعد إعادة التشغيل لضمان الاستمرارية.\n"
+            "4. <b>التعامل مع السبام المتعدد</b>: يحذف جميع الرسائل السبامية في ثوانٍ، حتى لو تم إرسال عشرات الرسائل دفعة واحدة.\n"
+            "5. <b>إشعارات احترافية ومؤقتة</b>: يرسل إشعارات أنيقة عن الكتم أو الحظر، ويحذفها تلقائيًا بعد دقيقتين للحفاظ على نظافة الشات.\n"
+            "6. <b>حماية من الدعوات الخارجية</b>: يمنع روابط الدعوات غير المرغوبة للواتساب أو التيليجرام، والإعلانات الترويجية.\n\n"
+            "⚙️ <b>لوحة التحكم الإدارية المتقدمة</b>\n"
+            "يأتي البوت مع لوحة تحكم سهلة الاستخدام للأدمن فقط، حيث يمكنك:\n"
+            "- اختيار وضع الحماية: كتم فوري، حظر فوري، أو كتم أولى ثم حظر.\n"
+            "- تحديد مدة الكتم بدقة (دقائق، ساعات، أيام، أشهر، أو سنوات).\n"
+            "- إعادة تعيين الإعدادات بكل سهولة، مع حفظ تلقائي للتغييرات.\n"
+            "هذه اللوحة تجعل إدارة المجموعة أكثر كفاءة وسلاسة، مع دعم كامل لعدة مجموعات.\n\n"
+            "🏆 <b>لماذا يفوق البوت الآخرين؟</b>\n"
+            "- <b>دقة كشف استثنائية</b>: تجنب الإيجابيات الزائفة بنسبة شبه معدومة.\n"
+            "- <b>أداء فائق السرعة</b>: يعمل دون تأخير أو توقف، حتى في المجموعات الكبيرة.\n"
+            "- <b>تصميم احترافي</b>: واجهة أنيقة وإشعارات جذابة.\n"
+            "- <b>تحديثات مستمرة</b>: يتكيف مع أحدث حيل السبام لضمان حماية دائمة.\n\n"
+            "⚠️ <b>كيفية التفعيل والتسجيل</b>\n"
+            "البوت يتطلب تسجيل المجموعة لدينا أولاً لضمان الخصوصية والأداء الأمثل. بعد التسجيل، نضيفه يدويًا ويبدأ العمل فورًا. نوفر أيضًا نسخ مخصصة مدفوعة بميزات إضافية مثل الإحصائيات المتقدمة والسجلات.\n\n"
+            "💎 <b>جاهز لتجربة حماية لا مثيل لها؟</b>\n"
+            "تواصل معنا الآن لتسجيل مجموعتك واستمتع ببيئة آمنة ومنظمة 100%."
         )
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📞 تواصل معنا للتسجيل أو الاستفسار", url="https://t.me/ql_om")]
         ])
+
         await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
         await callback.answer()
 
@@ -282,6 +293,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
         text = f"🛡️ <b>لوحة تحكم للمجموعة ID: {group_id}</b>\n\n"
         text += f"الوضع الحالي: {mode_to_text(current_mode)}\n"
         text += f"مدة الكتم: {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n"
+
         text += "اختر الوضع:"
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -301,10 +313,13 @@ async def handle_callback_query(callback: types.CallbackQuery):
         group_str = str(group_id)
         if group_str in settings:
             settings[group_str]['mode'] = mode
-            violations[group_id] = {}
+            settings[group_str]['violations'] = {}  # إعادة تعيين عدد المخالفات عند تغيير الوضع
             await save_settings_to_tg()
             await callback.answer(f"تم تغيير الوضع إلى: {mode_to_text(mode)}")
+            # إعادة عرض اللوحة
             await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
+        else:
+            await callback.answer("خطأ.")
 
     elif data.startswith("set_duration_"):
         group_id = int(data.split("_")[2])
@@ -341,7 +356,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
             seconds = temp_duration[group_id]['value'] * unit_seconds[temp_duration[group_id]['unit']]
             group_str = str(group_id)
             settings[group_str]['mute_duration'] = seconds
-            violations[group_id] = {}
+            settings[group_str]['violations'] = {}  # إعادة تعيين عدد المخالفات عند تغيير المدة
             await save_settings_to_tg()
             del temp_duration[group_id]
             await callback.answer("تم حفظ مدة الكتم بنجاح.")
@@ -385,28 +400,33 @@ def mode_to_text(mode):
         return 'كتم الأولى + حظر الثانية'
     return mode
 
-# ================== handler الرسائل في المجموعات ==================
+# ================== handler العام لكل الرسائل الأخرى ==================
 @dp.message()
 async def check_message(message: types.Message):
+    # الخاص: رد على أي رسالة (غير /start)
     if message.chat.type == 'private':
         contact_text = (
             "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
             "🔒 نحن نقدم أقوى حماية لمجموعات التيليجرام من السبام، الأرقام، والروابط المشبوهة.\n\n"
-            "📩 <b>للاستفسار أو تسجيل مجموعتك:</b>\n"
+            "📩 <b>للاستفسار أو تسجيل مجموعتك أو طلب النسخة المدفوعة:</b>\n"
             "تواصل معنا مباشرة من هنا 👇"
         )
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📞 تواصل معنا الآن", url="https://t.me/ql_om")],
             [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
         ])
+
         await message.answer(contact_text, reply_markup=keyboard, disable_web_page_preview=True)
         return
 
+    # المجموعات
     chat_id = message.chat.id
     if chat_id not in ALLOWED_GROUP_IDS:
         return
 
     user_id = message.from_user.id
+
     if await is_admin(chat_id, user_id):
         return
 
@@ -417,10 +437,10 @@ async def check_message(message: types.Message):
     try:
         await message.delete()
     except Exception as e:
-        logger.warning(f"فشل حذف الرسالة: {e}")
+        logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
     group_str = str(chat_id)
-    mode = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mode']
+    mode = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mute_duration']
     mute_duration = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mute_duration']
     full_name = message.from_user.full_name
     notification = ""
@@ -433,23 +453,27 @@ async def check_message(message: types.Message):
                 action_taken = True
                 notification = f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
             except Exception as e:
-                logger.warning(f"فشل الحظر: {e}")
-
+                logger.warning(f"فشل حظر {user_id}: {e}")
     elif mode == 'mute':
         try:
-            until_date = int(time.time()) + mute_duration if mute_duration > 30 else 0
+            until_date = int(time.time()) + mute_duration if mute_duration > 30 else 0  # إذا أقل من 30 ثانية، اجعله دائمًا
             await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
             action_taken = True
             duration_value, duration_unit = seconds_to_value_unit(mute_duration)
             notification = f"🔇 <b>تم كتم العضو</b> لمدة {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
         except Exception as e:
-            logger.warning(f"فشل الكتم: {e}")
-
+            logger.warning(f"فشل كتم {user_id}: {e}")
     elif mode == 'mute_then_ban':
-        if user_id not in violations[chat_id]:
-            violations[chat_id][user_id] = 0
-        violations[chat_id][user_id] += 1
-        if violations[chat_id][user_id] == 1:
+        if 'violations' not in settings[group_str]:
+            settings[group_str]['violations'] = {}
+
+        user_violations = settings[group_str]['violations']
+        current_count = user_violations.get(user_id, 0)
+        current_count += 1
+        user_violations[user_id] = current_count
+        await save_settings_to_tg()  # حفظ فوري
+
+        if current_count == 1:
             try:
                 until_date = int(time.time()) + mute_duration if mute_duration > 30 else 0
                 await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
@@ -457,7 +481,7 @@ async def check_message(message: types.Message):
                 duration_value, duration_unit = seconds_to_value_unit(mute_duration)
                 notification = f"🔇 <b>تم كتم العضو (مخالفة أولى)</b> لمدة {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
             except Exception as e:
-                logger.warning(f"فشل الكتم: {e}")
+                logger.warning(f"فشل كتم {user_id}: {e}")
         else:
             if not await is_banned(chat_id, user_id):
                 try:
@@ -465,9 +489,16 @@ async def check_message(message: types.Message):
                     action_taken = True
                     notification = f"🚫 <b>تم حظر العضو نهائيًا (مخالفة ثانية)</b>\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
                 except Exception as e:
-                    logger.warning(f"فشل الحظر: {e}")
+                    logger.warning(f"فشل حظر {user_id}: {e}")
 
     if notification:
+        try:
+            notify_msg = await bot.send_message(chat_id, notification)
+            asyncio.create_task(delete_after_delay(notify_msg, 120))
+        except Exception as e:
+            logger.warning(f"فشل إرسال الإشعار: {e}")
+    elif not action_taken:
+        notification = f"🗑️ <b>تم حذف رسالة سبام</b>\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n⚠️ العضو محظور مسبقًا"
         try:
             notify_msg = await bot.send_message(chat_id, notification)
             asyncio.create_task(delete_after_delay(notify_msg, 120))
@@ -493,7 +524,7 @@ async def on_startup():
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook تم تفعيله: {WEBHOOK_URL}")
+        logger.info(f"Webhook تم تفعيله بنجاح: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"فشل تفعيل الـ webhook: {e}")
 
