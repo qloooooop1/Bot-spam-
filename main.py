@@ -186,18 +186,23 @@ async def load_settings_from_tg():
 async def save_settings_to_tg():
     text = json.dumps(settings, ensure_ascii=False, indent=2)
     try:
-        if SETTINGS_MESSAGE_ID:
+        if SETTINGS_MESSAGE_ID is not None:
             await bot.edit_message_text(chat_id=DB_CHAT_ID, message_id=SETTINGS_MESSAGE_ID, text=text)
             logger.info(f"تم تعديل الإعدادات في الرسالة ID: {SETTINGS_MESSAGE_ID}")
         else:
+            # لو الـ ID مش موجود، أرسل رسالة جديدة تلقائيًا
             msg = await bot.send_message(chat_id=DB_CHAT_ID, text=text)
+            global SETTINGS_MESSAGE_ID
             SETTINGS_MESSAGE_ID = msg.message_id
             logger.info(f"تم إنشاء رسالة إعدادات جديدة ID: {SETTINGS_MESSAGE_ID}")
     except Exception as e:
         logger.error(f"خطأ في حفظ الإعدادات: {e}")
+        # محاولة احتياطية: أرسل رسالة جديدة مهما كان الخطأ
         try:
             msg = await bot.send_message(chat_id=DB_CHAT_ID, text=text)
+            global SETTINGS_MESSAGE_ID
             SETTINGS_MESSAGE_ID = msg.message_id
+            logger.info(f"تم إنشاء رسالة احتياطية جديدة ID: {SETTINGS_MESSAGE_ID}")
         except Exception as e2:
             logger.critical(f"فشل نهائي في الحفظ: {e2}")
 
