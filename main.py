@@ -4,6 +4,7 @@ import os
 import re
 import time
 import json
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
@@ -32,7 +33,7 @@ SETTINGS_MESSAGE_ID = None  # سيتم تحديده تلقائيًا
 # تحويل الأرقام العربية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
-        '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣۴۵۶۷۸۹',
+        '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٠١٢٣४۵۶۷۸۹',
         '012345678901234567890123456789'
     )
     return text.translate(trans)
@@ -106,8 +107,9 @@ def contains_spam(text: str) -> bool:
     return False
 
 # إعدادات البوت
-settings = {}  # {group_id_str: {'mode': ..., 'mute_duration': ..., 'violations': {user_id: count}}}
+settings = {}  # {group_id_str: {'mode': ..., 'mute_duration': ..., 'violations': {user_id: count}, 'night_mode_enabled': bool, 'night_start': 'HH:MM', 'night_end': 'HH:MM', 'night_announce_msg_id': int or None}}
 temp_duration = {}  # مؤقت لتحرير المدة
+temp_night = {}  # مؤقت لتحرير الوضع الليلي {group_id: {'start': 'HH:MM', 'end': 'HH:MM'}}
 
 unit_seconds = {
     'minute': 60,
@@ -137,7 +139,11 @@ async def load_settings_from_tg():
         settings[group_str] = {
             'mode': 'ban',
             'mute_duration': 86400,
-            'violations': {}
+            'violations': {},
+            'night_mode_enabled': False,
+            'night_start': '22:00',
+            'night_end': '06:00',
+            'night_announce_msg_id': None
         }
 
     try:
@@ -171,6 +177,14 @@ async def load_settings_from_tg():
                     settings[group_str].update(loaded[group_str])
                     if 'violations' not in settings[group_str]:
                         settings[group_str]['violations'] = {}
+                    if 'night_mode_enabled' not in settings[group_str]:
+                        settings[group_str]['night_mode_enabled'] = False
+                    if 'night_start' not in settings[group_str]:
+                        settings[group_str]['night_start'] = '22:00'
+                    if 'night_end' not in settings[group_str]:
+                        settings[group_str]['night_end'] = '06:00'
+                    if 'night_announce_msg_id' not in settings[group_str]:
+                        settings[group_str]['night_announce_msg_id'] = None
             SETTINGS_MESSAGE_ID = json_msg.message_id
             logger.info(f"تم تحميل الإعدادات من الرسالة ID: {SETTINGS_MESSAGE_ID}")
         else:
@@ -184,27 +198,58 @@ async def load_settings_from_tg():
         await save_settings_to_tg()
 
 async def save_settings_to_tg():
+    global SETTINGS_MESSAGE_ID
     text = json.dumps(settings, ensure_ascii=False, indent=2)
     try:
         if SETTINGS_MESSAGE_ID is not None:
             await bot.edit_message_text(chat_id=DB_CHAT_ID, message_id=SETTINGS_MESSAGE_ID, text=text)
             logger.info(f"تم تعديل الإعدادات في الرسالة ID: {SETTINGS_MESSAGE_ID}")
         else:
-            # لو الـ ID مش موجود، أرسل رسالة جديدة تلقائيًا
             msg = await bot.send_message(chat_id=DB_CHAT_ID, text=text)
-            global SETTINGS_MESSAGE_ID
             SETTINGS_MESSAGE_ID = msg.message_id
             logger.info(f"تم إنشاء رسالة إعدادات جديدة ID: {SETTINGS_MESSAGE_ID}")
     except Exception as e:
         logger.error(f"خطأ في حفظ الإعدادات: {e}")
-        # محاولة احتياطية: أرسل رسالة جديدة مهما كان الخطأ
         try:
             msg = await bot.send_message(chat_id=DB_CHAT_ID, text=text)
-            global SETTINGS_MESSAGE_ID
             SETTINGS_MESSAGE_ID = msg.message_id
             logger.info(f"تم إنشاء رسالة احتياطية جديدة ID: {SETTINGS_MESSAGE_ID}")
         except Exception as e2:
             logger.critical(f"فشل نهائي في الحفظ: {e2}")
+
+# ================== دالة للتحقق من الوضع الليلي دوريًا ==================
+async def night_mode_checker():
+    while True:
+        now = datetime.now().time()
+        for gid in ALLOWED_GROUP_IDS:
+            group_str = str(gid)
+            if group_str in settings and settings[group_str]['night_mode_enabled']:
+                start_time = datetime.strptime(settings[group_str]['night_start'], '%H:%M').time()
+                end_time = datetime.strptime(settings[group_str]['night_end'], '%H:%M').time()
+
+                # التحقق إذا الوقت الحالي داخل الفترة الليلية (مع مراعاة إذا الفترة عابرة لمنتصف الليل)
+                is_night = False
+                if start_time < end_time:
+                    is_night = start_time <= now < end_time
+                else:
+                    is_night = start_time <= now or now < end_time
+
+                if is_night and settings[group_str]['night_announce_msg_id'] is None:
+                    # إغلاق: أرسل رسالة إعلان
+                    announce_text = f"🌙 <b>تم تفعيل الوضع الليلي</b>\n\n🚫 المشاركات متوقفة مؤقتًا حتى الساعة {settings[group_str]['night_end']}.\n🛡️ استريحوا جيدًا!"
+                    msg = await bot.send_message(gid, announce_text)
+                    settings[group_str]['night_announce_msg_id'] = msg.message_id
+                    await save_settings_to_tg()
+                elif not is_night and settings[group_str]['night_announce_msg_id'] is not None:
+                    # فتح: احذف الرسالة
+                    try:
+                        await bot.delete_message(gid, settings[group_str]['night_announce_msg_id'])
+                    except Exception:
+                        pass
+                    settings[group_str]['night_announce_msg_id'] = None
+                    await save_settings_to_tg()
+
+        await asyncio.sleep(60)  # تحقق كل دقيقة
 
 # ================== handler /start ==================
 @dp.message(Command(commands=["start"]))
@@ -215,6 +260,7 @@ async def start_command(message: types.Message):
     if message.chat.type != 'private':
         return
 
+    # تحقق إذا كان أدمن في أي مجموعة مسموحة
     admin_groups = []
     for gid in ALLOWED_GROUP_IDS:
         if await is_admin(gid, user_id):
@@ -222,6 +268,7 @@ async def start_command(message: types.Message):
             admin_groups.append((gid, chat.title or f"Group {gid}"))
 
     if admin_groups:
+        # لوحة تحكم
         intro_text = "🛡️ <b>مرحباً بك في لوحة تحكم بوت الحارس الأمني!</b>\n\nاختر المجموعة التي تريد إدارتها:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[])
         for gid, title in admin_groups:
@@ -229,6 +276,7 @@ async def start_command(message: types.Message):
         keyboard.inline_keyboard.append([InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")])
         await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
     else:
+        # الرسالة لغير الأدمن
         intro_text = (
             "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
             "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع حظر فوري للمخالفين.</i>\n\n"
@@ -251,30 +299,32 @@ async def handle_callback_query(callback: types.CallbackQuery):
     if data == "more_info":
         more_info_text = (
             "🛡️ <b>تفاصيل كاملة عن بوت «الحارس الأمني» الذكي</b>\n\n"
-            "🔥 <b>مقدمة عن البوت وهدفه</b>\n"
-            "الحارس الأمني هو نظام حماية متقدم وذكي، مصمم خصيصًا لضمان سلامة ونظافة مجموعات التيليجرام من جميع أشكال السبام والإزعاج. يعمل على مدار 24 ساعة دون توقف، مستخدمًا خوارزميات ذكاء اصطناعي متقدمة لكشف المخالفات بدقة تصل إلى 99.9%، مع التركيز على الحماية الفورية والفعالة للحفاظ على جو مجموعتك آمنًا ومنتظمًا.\n\n"
-            "🛡️ <b>آلية عمل البوت في الحماية</b>\n"
-            "1. <b>كشف الأرقام الهاتفية بدقة فائقة</b>: يكتشف الأرقام حتى لو تم إخفاؤها بأي حيلة (مثل استخدام رموز، مسافات، أو أرقام عربية/فارسية). يركز بشكل خاص على الأرقام السعودية والخليجية مثل +966 أو 05.\n"
-            "2. <b>منع الروابط غير المرغوبة بالكامل</b>: يحظر روابط مجموعات الواتساب، التيك توك، الروابط المختصرة (bit.ly، t.co)، وروابط التيليجرام غير المسموحة. يسمح فقط بالروابط الآمنة مثل يوتيوب، إنستغرام، وتويتر (X).\n"
-            "3. <b>نظام الكتم والحظر المتقدم</b>: في المخالفة الأولى، يمكن كتم العضو لمدة محددة (مثل يوم واحد). أما في المخالفة الثانية، يتم الحظر النهائي فورًا. البوت يتذكر المخالفات حتى بعد إعادة التشغيل لضمان الاستمرارية.\n"
-            "4. <b>التعامل مع السبام المتعدد</b>: يحذف جميع الرسائل السبامية في ثوانٍ، حتى لو تم إرسال عشرات الرسائل دفعة واحدة.\n"
-            "5. <b>إشعارات احترافية ومؤقتة</b>: يرسل إشعارات أنيقة عن الكتم أو الحظر، ويحذفها تلقائيًا بعد دقيقتين للحفاظ على نظافة الشات.\n"
-            "6. <b>حماية من الدعوات الخارجية</b>: يمنع روابط الدعوات غير المرغوبة للواتساب أو التيليجرام، والإعلانات الترويجية.\n\n"
-            "⚙️ <b>لوحة التحكم الإدارية المتقدمة</b>\n"
-            "يأتي البوت مع لوحة تحكم سهلة الاستخدام للأدمن فقط، حيث يمكنك:\n"
-            "- اختيار وضع الحماية: كتم فوري، حظر فوري، أو كتم أولى ثم حظر.\n"
-            "- تحديد مدة الكتم بدقة (دقائق، ساعات، أيام، أشهر، أو سنوات).\n"
-            "- إعادة تعيين الإعدادات بكل سهولة، مع حفظ تلقائي للتغييرات.\n"
-            "هذه اللوحة تجعل إدارة المجموعة أكثر كفاءة وسلاسة، مع دعم كامل لعدة مجموعات.\n\n"
-            "🏆 <b>لماذا يفوق البوت الآخرين؟</b>\n"
-            "- <b>دقة كشف استثنائية</b>: تجنب الإيجابيات الزائفة بنسبة شبه معدومة.\n"
-            "- <b>أداء فائق السرعة</b>: يعمل دون تأخير أو توقف، حتى في المجموعات الكبيرة.\n"
-            "- <b>تصميم احترافي</b>: واجهة أنيقة وإشعارات جذابة.\n"
-            "- <b>تحديثات مستمرة</b>: يتكيف مع أحدث حيل السبام لضمان حماية دائمة.\n\n"
-            "⚠️ <b>كيفية التفعيل والتسجيل</b>\n"
-            "البوت يتطلب تسجيل المجموعة لدينا أولاً لضمان الخصوصية والأداء الأمثل. بعد التسجيل، نضيفه يدويًا ويبدأ العمل فورًا. نوفر أيضًا نسخ مخصصة مدفوعة بميزات إضافية مثل الإحصائيات المتقدمة والسجلات.\n\n"
-            "💎 <b>جاهز لتجربة حماية لا مثيل لها؟</b>\n"
-            "تواصل معنا الآن لتسجيل مجموعتك واستمتع ببيئة آمنة ومنظمة 100%."
+
+            "🔥 <b>ما هو البوت وما هدفه؟</b>\n"
+            "الحارس الأمني هو بوت حماية متقدم وذكي مصمم خصيصًا لحماية مجموعات التيليجرام الكبيرة والصغيرة من جميع أنواع السبام والمحتوى المزعج. يعمل تلقائيًا 24/7 دون تدخل يدوي، ويستخدم خوارزميات ذكية لكشف المخالفات بدقة عالية جدًا، مع التركيز على الحماية الفورية والفعالة.\n\n"
+
+            "🛡️ <b>كيف يحمي البوت مجموعتك؟</b>\n"
+            "• <b>كشف الأرقام الهواتف بذكاء فائق:</b> يكشف الأرقام حتى لو كانت مخفية بكل الحيل الشائعة (مثل 0/5/6/9/6/6/7/0 أو 0-5-6-9-6-6-7-0 أو ٠٥٦٩٦٦٧٠ أو مع إيموجي أو مسافات أو رموز). يدعم الأرقام السعودية والخليجية بشكل خاص (+966، 05، 5، إلخ).\n\n"
+            "• <b>منع الروابط المشبوهة تمامًا:</b> يحظر روابط الواتساب الجماعية، روابط التيك توك، روابط التيليجرام غير المسموحة، والروابط المختصرة (bit.ly، t.co، إلخ). يسمح فقط بالروابط الموثوقة مثل يوتيوب، إنستغرام، تويتر (X).\n\n"
+            "• <b>حظر فوري ونهائي:</b> من أول مخالفة فقط، يحذف الرسالة ويحظر العضو مباشرة (بدون كتم مؤقت أو تحذيرات)، عشان يضمن نظافة المجموعة فورًا.\n\n"
+            "• <b>التعامل مع التكرار السريع:</b> حتى لو أرسل السبامر 100 رسالة في ثانية، البوت يحذفها كلها ويحظر من الأولى دون توقف أو أخطاء.\n\n"
+            "• <b>إشعارات أنيقة ومؤقتة:</b> يرسل إشعار احترافي في المجموعة عن الحظر أو الحذف، ويحذفه تلقائيًا بعد دقيقتين عشان ما يزعج الشات.\n\n"
+            "• <b>حماية من الإعلانات والدعوات الخارجية:</b> يمنع دعوات الواتساب والتيليجرام الغير مرغوبة، والروابط الترويجية.\n\n"
+
+            "⚙️ <b>لماذا البوت مختلف عن البوتات الأخرى؟</b>\n"
+            "• دقة كشف عالية جدًا (لا false positive تقريبًا).\n"
+            "• سرعة فائقة ولا يتوقف أبدًا.\n"
+            "• تصميم احترافي وإشعارات أنيقة.\n"
+            "• تحديثات مستمرة لمواكبة حيل السبام الجديدة.\n\n"
+
+            "⚠️ <b>كيفية التفعيل في مجموعتك؟</b>\n"
+            "البوت لا يُضاف مباشرة ويعمل تلقائيًا، بل يتطلب تسجيل المجموعة لدينا أولاً لضمان الخصوصية والأمان والكفاءة العالية. بعد التسجيل، نضيف البوت يدويًا ويبدأ الحماية فورًا!\n\n"
+
+            "💎 <b>هل في نسخة مدفوعة أو مخصصة؟</b>\n"
+            "نعم، نوفر نسخ مخصصة بمميزات إضافية (مثل لوغز متقدم، إحصائيات، أوامر إدارية، إلخ) حسب احتياج المجموعة.\n\n"
+
+            "📩 <b>جاهز للحماية الفائقة؟</b>\n"
+            "تواصل معنا الآن لتسجيل مجموعتك أو لأي استفسار، واستمتع بمجموعة نظيفة وآمنة 100% 👇"
         )
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -294,116 +344,105 @@ async def handle_callback_query(callback: types.CallbackQuery):
         current_mode = settings[group_str]['mode']
         current_duration = settings[group_str]['mute_duration']
         duration_value, duration_unit = seconds_to_value_unit(current_duration)
+        night_enabled = settings[group_str]['night_mode_enabled']
+        night_start = settings[group_str]['night_start']
+        night_end = settings[group_str]['night_end']
 
         text = f"🛡️ <b>لوحة تحكم للمجموعة ID: {group_id}</b>\n\n"
         text += f"الوضع الحالي: {mode_to_text(current_mode)}\n"
         text += f"مدة الكتم: {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n"
+        text += f"الوضع الليلي: {'مفعل' if night_enabled else 'معطل'}\n"
+        if night_enabled:
+            text += f"وقت الإغلاق: {night_start}\n"
+            text += f"وقت الفتح: {night_end}\n\n"
 
-        text += "اختر الوضع:"
+        text += "اختر الإجراء:"
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ كتم عند المخالفة الأولى" if current_mode == 'mute' else "كتم عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_mute")],
             [InlineKeyboardButton(text="✅ حظر عند المخالفة الأولى" if current_mode == 'ban' else "حظر عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_ban")],
             [InlineKeyboardButton(text="✅ كتم الأولى + حظر الثانية" if current_mode == 'mute_then_ban' else "كتم الأولى + حظر الثانية", callback_data=f"set_mode_{group_id}_mute_then_ban")],
-            [InlineKeyboardButton(text="تحديد مدة الكتم", callback_data=f"set_duration_{group_id}")]
+            [InlineKeyboardButton(text="تحديد مدة الكتم", callback_data=f"set_duration_{group_id}")],
+            [InlineKeyboardButton(text=f"{'✅' if night_enabled else ''} تفعيل/تعطيل الوضع الليلي", callback_data=f"toggle_night_{group_id}")],
+            [InlineKeyboardButton(text="تحديد توقيت الوضع الليلي", callback_data=f"set_night_time_{group_id}")]
         ])
 
         await callback.message.edit_text(text, reply_markup=keyboard)
         await callback.answer()
 
-    elif data.startswith("set_mode_"):
-        parts = data.split("_")
-        group_id = int(parts[2])
-        mode = "_".join(parts[3:])
+    elif data.startswith("toggle_night_"):
+        group_id = int(data.split("_")[2])
         group_str = str(group_id)
         if group_str in settings:
-            settings[group_str]['mode'] = mode
-            settings[group_str]['violations'] = {}  # إعادة تعيين عدد المخالفات عند تغيير الوضع
+            settings[group_str]['night_mode_enabled'] = not settings[group_str]['night_mode_enabled']
             await save_settings_to_tg()
-            await callback.answer(f"تم تغيير الوضع إلى: {mode_to_text(mode)}")
-            # إعادة عرض اللوحة
+            await callback.answer("تم تبديل حالة الوضع الليلي بنجاح.")
             await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
-        else:
-            await callback.answer("خطأ.")
 
-    elif data.startswith("set_duration_"):
-        group_id = int(data.split("_")[2])
+    elif data.startswith("set_night_time_"):
+        group_id = int(data.split("_")[3])
         group_str = str(group_id)
         if group_str not in settings:
             await callback.answer("خطأ.")
             return
 
-        current_duration = settings[group_str]['mute_duration']
-        value, unit = seconds_to_value_unit(current_duration)
-        temp_duration[group_id] = {'value': max(1, value), 'unit': unit}
+        start = settings[group_str]['night_start']
+        end = settings[group_str]['night_end']
+        temp_night[group_id] = {'start': start, 'end': end}
 
-        text, keyboard = get_duration_editor(group_id)
+        text, keyboard = get_night_editor(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         await callback.answer()
 
-    elif data.startswith("duration_"):
+    elif data.startswith("night_"):
         parts = data.split("_")
         group_id = int(parts[1])
         action = parts[2]
-        param = "_".join(parts[3:]) if len(parts) > 3 else None
+        param = parts[3] if len(parts) > 3 else None
 
-        if group_id not in temp_duration:
+        if group_id not in temp_night:
             await callback.answer("انتهت الجلسة، ابدأ من جديد.")
             return
 
-        if action in ["plus", "minus"]:
-            delta = int(param) if action == "plus" else -int(param)
-            temp_duration[group_id]['value'] = max(1, temp_duration[group_id]['value'] + delta)
-        elif action == "unit":
-            if param in unit_seconds:
-                temp_duration[group_id]['unit'] = param
+        if action == "start" or action == "end":
+            temp_night[group_id][action] = param
+
         elif action == "save":
-            seconds = temp_duration[group_id]['value'] * unit_seconds[temp_duration[group_id]['unit']]
             group_str = str(group_id)
-            settings[group_str]['mute_duration'] = seconds
-            settings[group_str]['violations'] = {}  # إعادة تعيين عدد المخالفات عند تغيير المدة
+            settings[group_str]['night_start'] = temp_night[group_id]['start']
+            settings[group_str]['night_end'] = temp_night[group_id]['end']
             await save_settings_to_tg()
-            del temp_duration[group_id]
-            await callback.answer("تم حفظ مدة الكتم بنجاح.")
-            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
-            return
-        elif action == "cancel":
-            del temp_duration[group_id]
+            del temp_night[group_id]
+            await callback.answer("تم حفظ توقيت الوضع الليلي بنجاح.")
             await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
             return
 
-        text, keyboard = get_duration_editor(group_id)
+        elif action == "cancel":
+            del temp_night[group_id]
+            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
+            return
+
+        text, keyboard = get_night_editor(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         await callback.answer()
 
-def get_duration_editor(group_id):
-    value = temp_duration[group_id]['value']
-    unit = temp_duration[group_id]['unit']
-    text = f"🕒 <b>تحرير مدة الكتم</b>\n\nالقيمة الحالية: {value} {unit_to_text_dict.get(unit, unit)}\n\nاستخدم الأزرار للتعديل:"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="-10", callback_data=f"duration_{group_id}_minus_10"),
-         InlineKeyboardButton(text="-1", callback_data=f"duration_{group_id}_minus_1"),
-         InlineKeyboardButton(text=f"{value}", callback_data="dummy"),
-         InlineKeyboardButton(text="+1", callback_data=f"duration_{group_id}_plus_1"),
-         InlineKeyboardButton(text="+10", callback_data=f"duration_{group_id}_plus_10")],
-        [InlineKeyboardButton(text=f"✅ دقيقة" if unit == 'minute' else "دقيقة", callback_data=f"duration_{group_id}_unit_minute"),
-         InlineKeyboardButton(text=f"✅ ساعة" if unit == 'hour' else "ساعة", callback_data=f"duration_{group_id}_unit_hour"),
-         InlineKeyboardButton(text=f"✅ يوم" if unit == 'day' else "يوم", callback_data=f"duration_{group_id}_unit_day")],
-        [InlineKeyboardButton(text=f"✅ شهر" if unit == 'month' else "شهر", callback_data=f"duration_{group_id}_unit_month"),
-         InlineKeyboardButton(text=f"✅ سنة" if unit == 'year' else "سنة", callback_data=f"duration_{group_id}_unit_year")],
-        [InlineKeyboardButton(text="💾 حفظ", callback_data=f"duration_{group_id}_save"),
-         InlineKeyboardButton(text="❌ إلغاء", callback_data=f"duration_{group_id}_cancel")]
+def get_night_editor(group_id):
+    start = temp_night[group_id]['start']
+    end = temp_night[group_id]['end']
+    text = f"🕒 <b>تحرير توقيت الوضع الليلي</b>\n\nوقت الإغلاق الحالي: {start}\nوقت الفتح الحالي: {end}\n\nحدد الوقت الجديد (HH:MM):"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for hour in range(0, 24):
+        for minute in ['00', '30']:
+            time_str = f"{hour:02d}:{minute}"
+            keyboard.inline_keyboard.append([
+                InlineKeyboardButton(text=time_str, callback_data=f"night_{group_id}_start_{time_str}"),
+                InlineKeyboardButton(text=time_str, callback_data=f"night_{group_id}_end_{time_str}")
+            ])
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="💾 حفظ", callback_data=f"night_{group_id}_save"),
+        InlineKeyboardButton(text="❌ إلغاء", callback_data=f"night_{group_id}_cancel")
     ])
     return text, keyboard
-
-def mode_to_text(mode):
-    if mode == 'mute':
-        return 'كتم عند المخالفة الأولى'
-    elif mode == 'ban':
-        return 'حظر عند المخالفة الأولى'
-    elif mode == 'mute_then_ban':
-        return 'كتم الأولى + حظر الثانية'
-    return mode
 
 # ================== handler العام لكل الرسائل الأخرى ==================
 @dp.message()
@@ -432,6 +471,25 @@ async def check_message(message: types.Message):
 
     user_id = message.from_user.id
 
+    group_str = str(chat_id)
+    # تحقق من الوضع الليلي أولاً
+    if group_str in settings and settings[group_str]['night_mode_enabled']:
+        start_time = datetime.strptime(settings[group_str]['night_start'], '%H:%M').time()
+        end_time = datetime.strptime(settings[group_str]['night_end'], '%H:%M').time()
+        now = datetime.now().time()
+        is_night = False
+        if start_time < end_time:
+            is_night = start_time <= now < end_time
+        else:
+            is_night = start_time <= now or now < end_time
+
+        if is_night and not await is_admin(chat_id, user_id):
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return  # منع الرسائل غير الإدارية
+
     if await is_admin(chat_id, user_id):
         return
 
@@ -444,8 +502,7 @@ async def check_message(message: types.Message):
     except Exception as e:
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    group_str = str(chat_id)
-    mode = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mute_duration']
+    mode = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mode']
     mute_duration = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mute_duration']
     full_name = message.from_user.full_name
     notification = ""
@@ -526,6 +583,7 @@ WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 @app.on_event("startup")
 async def on_startup():
     await load_settings_from_tg()
+    asyncio.create_task(night_mode_checker())  # بدء التحقق الدوري للوضع الليلي
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(url=WEBHOOK_URL)
