@@ -117,22 +117,41 @@ unit_seconds = {
     'year': 31536000   # 365 days
 }
 
+unit_to_text_dict = {'minute': 'دقيقة', 'hour': 'ساعة', 'day': 'يوم', 'month': 'شهر', 'year': 'سنة'}
+
 def load_settings():
     global settings
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
-            settings = json.load(f)
-    else:
-        for gid in ALLOWED_GROUP_IDS:
-            settings[str(gid)] = {'mode': 'ban', 'mute_duration': 86400}  # default: ban, mute 1 day
+            loaded = json.load(f)
+            settings = {k: v for k, v in loaded.items()}
+    # ضمان وجود الإعدادات الافتراضية
+    for gid in ALLOWED_GROUP_IDS:
+        group_str = str(gid)
+        if group_str not in settings:
+            settings[group_str] = {'mode': 'ban', 'mute_duration': 86400}
 
 def save_settings():
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(settings, f)
 
-# تهيئة violations دائماً جديدة
+# تهيئة violations
 for gid in ALLOWED_GROUP_IDS:
     violations[gid] = {}
+
+# دالة لتحويل الثواني إلى قيمة ووحدة للعرض (تحسين: اختيار أكبر وحدة مناسبة)
+def seconds_to_value_unit(seconds: int):
+    if seconds == 0:
+        return 0, 'minute'
+    for unit, secs in sorted(unit_seconds.items(), key=lambda x: x[1], reverse=True):
+        if seconds >= secs:
+            value = seconds // secs
+            remainder = seconds % secs
+            if remainder == 0:
+                return value, unit
+            # إذا لم يكن مضاعفاً تماماً، نستخدم الوحدة الأكبر مع الكسر، لكن للبساطة نستخدم أكبر ممكن
+    # fallback إلى دقائق
+    return seconds // 60, 'minute'
 
 # ================== handler /start ==================
 @dp.message(Command(commands=["start"]))
@@ -230,14 +249,14 @@ async def handle_callback_query(callback: types.CallbackQuery):
 
         text = f"🛡️ <b>لوحة تحكم للمجموعة ID: {group_id}</b>\n\n"
         text += f"الوضع الحالي: {mode_to_text(current_mode)}\n"
-        text += f"مدة الكتم: {duration_value} {unit_to_text(duration_unit)}\n\n"
+        text += f"مدة الكتم: {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n"
 
         text += "اختر الوضع:"
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="كتم عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_mute")],
-            [InlineKeyboardButton(text="حظر عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_ban")],
-            [InlineKeyboardButton(text="كتم الأولى + حظر الثانية", callback_data=f"set_mode_{group_id}_mute_then_ban")],
+            [InlineKeyboardButton(text="✅ كتم عند المخالفة الأولى" if current_mode == 'mute' else "كتم عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_mute")],
+            [InlineKeyboardButton(text="✅ حظر عند المخالفة الأولى" if current_mode == 'ban' else "حظر عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_ban")],
+            [InlineKeyboardButton(text="✅ كتم الأولى + حظر الثانية" if current_mode == 'mute_then_ban' else "كتم الأولى + حظر الثانية", callback_data=f"set_mode_{group_id}_mute_then_ban")],
             [InlineKeyboardButton(text="تحديد مدة الكتم", callback_data=f"set_duration_{group_id}")]
         ])
 
@@ -254,8 +273,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
             save_settings()
             await callback.answer(f"تم تغيير الوضع إلى: {mode_to_text(mode)}")
             # إعادة عرض اللوحة
-            new_callback = types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}")
-            await handle_callback_query(new_callback)
+            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
         else:
             await callback.answer("خطأ.")
 
@@ -268,7 +286,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
 
         current_duration = settings[group_str]['mute_duration']
         value, unit = seconds_to_value_unit(current_duration)
-        temp_duration[group_id] = {'value': value, 'unit': unit}
+        temp_duration[group_id] = {'value': max(1, value), 'unit': unit}
 
         text, keyboard = get_duration_editor(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
@@ -278,16 +296,13 @@ async def handle_callback_query(callback: types.CallbackQuery):
         parts = data.split("_")
         group_id = int(parts[1])
         action = parts[2]
-        if len(parts) > 3:
-            param = "_".join(parts[3:])
-        else:
-            param = None
+        param = "_".join(parts[3:]) if len(parts) > 3 else None
 
         if group_id not in temp_duration:
             await callback.answer("انتهت الجلسة، ابدأ من جديد.")
             return
 
-        if action == "plus" or action == "minus":
+        if action in ["plus", "minus"]:
             delta = int(param) if action == "plus" else -int(param)
             temp_duration[group_id]['value'] = max(1, temp_duration[group_id]['value'] + delta)
         elif action == "unit":
@@ -299,16 +314,12 @@ async def handle_callback_query(callback: types.CallbackQuery):
             settings[group_str]['mute_duration'] = seconds
             save_settings()
             del temp_duration[group_id]
-            await callback.answer("تم حفظ مدة الكتم.")
-            # إعادة عرض اللوحة
-            new_callback = types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}")
-            await handle_callback_query(new_callback)
+            await callback.answer("تم حفظ مدة الكتم بنجاح.")
+            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
             return
         elif action == "cancel":
             del temp_duration[group_id]
-            # إعادة عرض اللوحة
-            new_callback = types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}")
-            await handle_callback_query(new_callback)
+            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
             return
 
         text, keyboard = get_duration_editor(group_id)
@@ -318,20 +329,20 @@ async def handle_callback_query(callback: types.CallbackQuery):
 def get_duration_editor(group_id):
     value = temp_duration[group_id]['value']
     unit = temp_duration[group_id]['unit']
-    text = f"🕒 <b>تحرير مدة الكتم</b>\n\nالقيمة الحالية: {value} {unit_to_text(unit)}\n\nاستخدم الأزرار للتعديل:"
+    text = f"🕒 <b>تحرير مدة الكتم</b>\n\nالقيمة الحالية: {value} {unit_to_text_dict.get(unit, unit)}\n\nاستخدم الأزرار للتعديل:"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="-10", callback_data=f"duration_{group_id}_minus_10"),
          InlineKeyboardButton(text="-1", callback_data=f"duration_{group_id}_minus_1"),
-         InlineKeyboardButton(text=f"{value}", callback_data="dummy"),  # عرض فقط
+         InlineKeyboardButton(text=f"{value}", callback_data="dummy"),
          InlineKeyboardButton(text="+1", callback_data=f"duration_{group_id}_plus_1"),
          InlineKeyboardButton(text="+10", callback_data=f"duration_{group_id}_plus_10")],
-        [InlineKeyboardButton(text="دقيقة", callback_data=f"duration_{group_id}_unit_minute"),
-         InlineKeyboardButton(text="ساعة", callback_data=f"duration_{group_id}_unit_hour"),
-         InlineKeyboardButton(text="يوم", callback_data=f"duration_{group_id}_unit_day")],
-        [InlineKeyboardButton(text="شهر", callback_data=f"duration_{group_id}_unit_month"),
-         InlineKeyboardButton(text="سنة", callback_data=f"duration_{group_id}_unit_year")],
-        [InlineKeyboardButton(text="حفظ", callback_data=f"duration_{group_id}_save"),
-         InlineKeyboardButton(text="إلغاء", callback_data=f"duration_{group_id}_cancel")]
+        [InlineKeyboardButton(text=f"✅ دقيقة" if unit == 'minute' else "دقيقة", callback_data=f"duration_{group_id}_unit_minute"),
+         InlineKeyboardButton(text=f"✅ ساعة" if unit == 'hour' else "ساعة", callback_data=f"duration_{group_id}_unit_hour"),
+         InlineKeyboardButton(text=f"✅ يوم" if unit == 'day' else "يوم", callback_data=f"duration_{group_id}_unit_day")],
+        [InlineKeyboardButton(text=f"✅ شهر" if unit == 'month' else "شهر", callback_data=f"duration_{group_id}_unit_month"),
+         InlineKeyboardButton(text=f"✅ سنة" if unit == 'year' else "سنة", callback_data=f"duration_{group_id}_unit_year")],
+        [InlineKeyboardButton(text="💾 حفظ", callback_data=f"duration_{group_id}_save"),
+         InlineKeyboardButton(text="❌ إلغاء", callback_data=f"duration_{group_id}_cancel")]
     ])
     return text, keyboard
 
@@ -343,15 +354,6 @@ def mode_to_text(mode):
     elif mode == 'mute_then_ban':
         return 'كتم الأولى + حظر الثانية'
     return mode
-
-def unit_to_text(unit):
-    return {'minute': 'دقيقة', 'hour': 'ساعة', 'day': 'يوم', 'month': 'شهر', 'year': 'سنة'}.get(unit, unit)
-
-def seconds_to_value_unit(seconds):
-    for unit, secs in sorted(unit_seconds.items(), key=lambda x: x[1], reverse=True):
-        if seconds % secs == 0:
-            return seconds // secs, unit
-    return 1, 'day'  # default
 
 # ================== handler العام لكل الرسائل الأخرى ==================
 @dp.message()
@@ -393,8 +395,8 @@ async def check_message(message: types.Message):
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
     group_str = str(chat_id)
-    mode = settings[group_str]['mode']
-    mute_duration = settings[group_str]['mute_duration']
+    mode = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mode']
+    mute_duration = settings.get(group_str, {'mode': 'ban', 'mute_duration': 86400})['mute_duration']
     full_name = message.from_user.full_name
     notification = ""
     action_taken = False
@@ -409,11 +411,11 @@ async def check_message(message: types.Message):
                 logger.warning(f"فشل حظر {user_id}: {e}")
     elif mode == 'mute':
         try:
-            until_date = int(time.time()) + mute_duration
+            until_date = int(time.time()) + mute_duration if mute_duration > 0 else 0
             await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
             action_taken = True
             duration_value, duration_unit = seconds_to_value_unit(mute_duration)
-            notification = f"🔇 <b>تم كتم العضو</b> لمدة {duration_value} {unit_to_text(duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+            notification = f"🔇 <b>تم كتم العضو</b> لمدة {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
         except Exception as e:
             logger.warning(f"فشل كتم {user_id}: {e}")
     elif mode == 'mute_then_ban':
@@ -422,11 +424,11 @@ async def check_message(message: types.Message):
         violations[chat_id][user_id] += 1
         if violations[chat_id][user_id] == 1:
             try:
-                until_date = int(time.time()) + mute_duration
+                until_date = int(time.time()) + mute_duration if mute_duration > 0 else 0
                 await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
                 action_taken = True
                 duration_value, duration_unit = seconds_to_value_unit(mute_duration)
-                notification = f"🔇 <b>تم كتم العضو (مخالفة أولى)</b> لمدة {duration_value} {unit_to_text(duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+                notification = f"🔇 <b>تم كتم العضو (مخالفة أولى)</b> لمدة {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
             except Exception as e:
                 logger.warning(f"فشل كتم {user_id}: {e}")
         else:
