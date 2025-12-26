@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+import json
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
@@ -101,11 +102,36 @@ def contains_spam(text: str) -> bool:
     return False
 
 # إعدادات جديدة
+SETTINGS_FILE = "settings.json"
+
 settings = {}  # {group_id: {'mode': 'ban' | 'mute' | 'mute_then_ban', 'mute_duration': seconds}}
 violations = {}  # {group_id: {user_id: count}}
 
+temp_duration = {}  # {group_id: {'value': int, 'unit': 'minute'|'hour'|'day'|'month'|'year'}}
+
+unit_seconds = {
+    'minute': 60,
+    'hour': 3600,
+    'day': 86400,
+    'month': 2592000,  # 30 days
+    'year': 31536000   # 365 days
+}
+
+def load_settings():
+    global settings
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, 'r') as f:
+            settings = json.load(f)
+    else:
+        for gid in ALLOWED_GROUP_IDS:
+            settings[str(gid)] = {'mode': 'ban', 'mute_duration': 86400}  # default: ban, mute 1 day
+
+def save_settings():
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f)
+
+# تهيئة violations دائماً جديدة
 for gid in ALLOWED_GROUP_IDS:
-    settings[gid] = {'mode': 'ban', 'mute_duration': 86400}  # default: ban, mute 1 day
     violations[gid] = {}
 
 # ================== handler /start ==================
@@ -163,7 +189,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
             "🛡️ <b>كيف يحمي البوت مجموعتك؟</b>\n"
             "• <b>كشف الأرقام الهواتف بذكاء فائق:</b> يكشف الأرقام حتى لو كانت مخفية بكل الحيل الشائعة (مثل 0/5/6/9/6/6/7/0 أو 0-5-6-9-6-6-7-0 أو ٠٥٦٩٦٦٧٠ أو مع إيموجي أو مسافات أو رموز). يدعم الأرقام السعودية والخليجية بشكل خاص (+966، 05، 5، إلخ).\n\n"
             "• <b>منع الروابط المشبوهة تمامًا:</b> يحظر روابط الواتساب الجماعية، روابط التيك توك، روابط التيليجرام غير المسموحة، والروابط المختصرة (bit.ly، t.co، إلخ). يسمح فقط بالروابط الموثوقة مثل يوتيوب، إنستغرام، تويتر (X).\n\n"
-            "• <b> :كتم او حضر نهائي فوري </b> من أول مخالفةيتم كتم العضو فقط او حضره او تحديد كتم المره الاولى وحضر في حال تكرار المخالفه من لوحه تحكم خاصه بمالك المجموعه، يحذف الرسالة ويحظر او يكتم العضو مباشرة ( كتم مؤقت أو او حضر حسب الاعدادات)، عشان يضمن نظافة المجموعة فورًا.\n\n"
+            "• <b>حظر فوري ونهائي:</b> من أول مخالفة فقط، يحذف الرسالة ويحظر العضو مباشرة (بدون كتم مؤقت أو تحذيرات)، عشان يضمن نظافة المجموعة فورًا.\n\n"
             "• <b>التعامل مع التكرار السريع:</b> حتى لو أرسل السبامر 100 رسالة في ثانية، البوت يحذفها كلها ويحظر من الأولى دون توقف أو أخطاء.\n\n"
             "• <b>إشعارات أنيقة ومؤقتة:</b> يرسل إشعار احترافي في المجموعة عن الحظر أو الحذف، ويحذفه تلقائيًا بعد دقيقتين عشان ما يزعج الشات.\n\n"
             "• <b>حماية من الإعلانات والدعوات الخارجية:</b> يمنع دعوات الواتساب والتيليجرام الغير مرغوبة، والروابط الترويجية.\n\n"
@@ -193,18 +219,18 @@ async def handle_callback_query(callback: types.CallbackQuery):
 
     elif data.startswith("manage_"):
         group_id = int(data.split("_")[1])
-        if group_id not in settings:
+        group_str = str(group_id)
+        if group_str not in settings:
             await callback.answer("مجموعة غير مدعومة.")
             return
 
-        current_mode = settings[group_id]['mode']
-        current_duration = settings[group_id]['mute_duration']
-        duration_str = f"{current_duration // 3600} ساعات" if current_duration < 86400 else f"{current_duration // 86400} أيام"
+        current_mode = settings[group_str]['mode']
+        current_duration = settings[group_str]['mute_duration']
+        duration_value, duration_unit = seconds_to_value_unit(current_duration)
 
         text = f"🛡️ <b>لوحة تحكم للمجموعة ID: {group_id}</b>\n\n"
-        text += f"الوضع الحالي: {current_mode}\n"
-        if 'mute' in current_mode:
-            text += f"مدة الكتم: {duration_str}\n\n"
+        text += f"الوضع الحالي: {mode_to_text(current_mode)}\n"
+        text += f"مدة الكتم: {duration_value} {unit_to_text(duration_unit)}\n\n"
 
         text += "اختر الوضع:"
 
@@ -222,37 +248,110 @@ async def handle_callback_query(callback: types.CallbackQuery):
         parts = data.split("_")
         group_id = int(parts[2])
         mode = "_".join(parts[3:])
-        if group_id in settings:
-            settings[group_id]['mode'] = mode
-            await callback.answer(f"تم تغيير الوضع إلى: {mode}")
+        group_str = str(group_id)
+        if group_str in settings:
+            settings[group_str]['mode'] = mode
+            save_settings()
+            await callback.answer(f"تم تغيير الوضع إلى: {mode_to_text(mode)}")
             # إعادة عرض اللوحة
-            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
+            new_callback = types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}")
+            await handle_callback_query(new_callback)
         else:
             await callback.answer("خطأ.")
 
     elif data.startswith("set_duration_"):
         group_id = int(data.split("_")[2])
-        text = "اختر مدة الكتم:"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="1 ساعة", callback_data=f"duration_{group_id}_3600")],
-            [InlineKeyboardButton(text="1 يوم", callback_data=f"duration_{group_id}_86400")],
-            [InlineKeyboardButton(text="1 أسبوع", callback_data=f"duration_{group_id}_604800")],
-            [InlineKeyboardButton(text="1 شهر", callback_data=f"duration_{group_id}_2592000")],
-        ])
+        group_str = str(group_id)
+        if group_str not in settings:
+            await callback.answer("خطأ.")
+            return
+
+        current_duration = settings[group_str]['mute_duration']
+        value, unit = seconds_to_value_unit(current_duration)
+        temp_duration[group_id] = {'value': value, 'unit': unit}
+
+        text, keyboard = get_duration_editor(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         await callback.answer()
 
     elif data.startswith("duration_"):
         parts = data.split("_")
         group_id = int(parts[1])
-        duration = int(parts[2])
-        if group_id in settings:
-            settings[group_id]['mute_duration'] = duration
-            await callback.answer(f"تم تحديد مدة الكتم إلى {duration} ثواني.")
-            # إعادة عرض اللوحة
-            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
+        action = parts[2]
+        if len(parts) > 3:
+            param = "_".join(parts[3:])
         else:
-            await callback.answer("خطأ.")
+            param = None
+
+        if group_id not in temp_duration:
+            await callback.answer("انتهت الجلسة، ابدأ من جديد.")
+            return
+
+        if action == "plus" or action == "minus":
+            delta = int(param) if action == "plus" else -int(param)
+            temp_duration[group_id]['value'] = max(1, temp_duration[group_id]['value'] + delta)
+        elif action == "unit":
+            if param in unit_seconds:
+                temp_duration[group_id]['unit'] = param
+        elif action == "save":
+            seconds = temp_duration[group_id]['value'] * unit_seconds[temp_duration[group_id]['unit']]
+            group_str = str(group_id)
+            settings[group_str]['mute_duration'] = seconds
+            save_settings()
+            del temp_duration[group_id]
+            await callback.answer("تم حفظ مدة الكتم.")
+            # إعادة عرض اللوحة
+            new_callback = types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}")
+            await handle_callback_query(new_callback)
+            return
+        elif action == "cancel":
+            del temp_duration[group_id]
+            # إعادة عرض اللوحة
+            new_callback = types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}")
+            await handle_callback_query(new_callback)
+            return
+
+        text, keyboard = get_duration_editor(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+
+def get_duration_editor(group_id):
+    value = temp_duration[group_id]['value']
+    unit = temp_duration[group_id]['unit']
+    text = f"🕒 <b>تحرير مدة الكتم</b>\n\nالقيمة الحالية: {value} {unit_to_text(unit)}\n\nاستخدم الأزرار للتعديل:"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="-10", callback_data=f"duration_{group_id}_minus_10"),
+         InlineKeyboardButton(text="-1", callback_data=f"duration_{group_id}_minus_1"),
+         InlineKeyboardButton(text=f"{value}", callback_data="dummy"),  # عرض فقط
+         InlineKeyboardButton(text="+1", callback_data=f"duration_{group_id}_plus_1"),
+         InlineKeyboardButton(text="+10", callback_data=f"duration_{group_id}_plus_10")],
+        [InlineKeyboardButton(text="دقيقة", callback_data=f"duration_{group_id}_unit_minute"),
+         InlineKeyboardButton(text="ساعة", callback_data=f"duration_{group_id}_unit_hour"),
+         InlineKeyboardButton(text="يوم", callback_data=f"duration_{group_id}_unit_day")],
+        [InlineKeyboardButton(text="شهر", callback_data=f"duration_{group_id}_unit_month"),
+         InlineKeyboardButton(text="سنة", callback_data=f"duration_{group_id}_unit_year")],
+        [InlineKeyboardButton(text="حفظ", callback_data=f"duration_{group_id}_save"),
+         InlineKeyboardButton(text="إلغاء", callback_data=f"duration_{group_id}_cancel")]
+    ])
+    return text, keyboard
+
+def mode_to_text(mode):
+    if mode == 'mute':
+        return 'كتم عند المخالفة الأولى'
+    elif mode == 'ban':
+        return 'حظر عند المخالفة الأولى'
+    elif mode == 'mute_then_ban':
+        return 'كتم الأولى + حظر الثانية'
+    return mode
+
+def unit_to_text(unit):
+    return {'minute': 'دقيقة', 'hour': 'ساعة', 'day': 'يوم', 'month': 'شهر', 'year': 'سنة'}.get(unit, unit)
+
+def seconds_to_value_unit(seconds):
+    for unit, secs in sorted(unit_seconds.items(), key=lambda x: x[1], reverse=True):
+        if seconds % secs == 0:
+            return seconds // secs, unit
+    return 1, 'day'  # default
 
 # ================== handler العام لكل الرسائل الأخرى ==================
 @dp.message()
@@ -293,8 +392,9 @@ async def check_message(message: types.Message):
     except Exception as e:
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    mode = settings[chat_id]['mode']
-    mute_duration = settings[chat_id]['mute_duration']
+    group_str = str(chat_id)
+    mode = settings[group_str]['mode']
+    mute_duration = settings[group_str]['mute_duration']
     full_name = message.from_user.full_name
     notification = ""
     action_taken = False
@@ -312,8 +412,8 @@ async def check_message(message: types.Message):
             until_date = int(time.time()) + mute_duration
             await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
             action_taken = True
-            duration_str = f"{mute_duration // 3600} ساعات" if mute_duration < 86400 else f"{mute_duration // 86400} أيام"
-            notification = f"🔇 <b>تم كتم العضو</b> لمدة {duration_str}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+            duration_value, duration_unit = seconds_to_value_unit(mute_duration)
+            notification = f"🔇 <b>تم كتم العضو</b> لمدة {duration_value} {unit_to_text(duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
         except Exception as e:
             logger.warning(f"فشل كتم {user_id}: {e}")
     elif mode == 'mute_then_ban':
@@ -325,8 +425,8 @@ async def check_message(message: types.Message):
                 until_date = int(time.time()) + mute_duration
                 await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
                 action_taken = True
-                duration_str = f"{mute_duration // 3600} ساعات" if mute_duration < 86400 else f"{mute_duration // 86400} أيام"
-                notification = f"🔇 <b>تم كتم العضو (مخالفة أولى)</b> لمدة {duration_str}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+                duration_value, duration_unit = seconds_to_value_unit(mute_duration)
+                notification = f"🔇 <b>تم كتم العضو (مخالفة أولى)</b> لمدة {duration_value} {unit_to_text(duration_unit)}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
             except Exception as e:
                 logger.warning(f"فشل كتم {user_id}: {e}")
         else:
@@ -367,6 +467,7 @@ WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 
 @app.on_event("startup")
 async def on_startup():
+    load_settings()
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(url=WEBHOOK_URL)
@@ -376,6 +477,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    save_settings()
     await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
