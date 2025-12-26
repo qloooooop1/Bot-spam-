@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
@@ -99,30 +100,60 @@ def contains_spam(text: str) -> bool:
 
     return False
 
-# ================== handler /start أولاً (الحل النهائي) ==================
+# إعدادات جديدة
+settings = {}  # {group_id: {'mode': 'ban' | 'mute' | 'mute_then_ban', 'mute_duration': seconds}}
+violations = {}  # {group_id: {user_id: count}}
+
+for gid in ALLOWED_GROUP_IDS:
+    settings[gid] = {'mode': 'ban', 'mute_duration': 86400}  # default: ban, mute 1 day
+    violations[gid] = {}
+
+# ================== handler /start ==================
 @dp.message(Command(commands=["start"]))
 async def start_command(message: types.Message):
     logger.info(f"تم استلام /start من {message.from_user.id}")
 
-    intro_text = (
-        "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
-        "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع حظر فوري للمخالفين.</i>\n\n"
-        "📌 <b>ملاحظة:</b> البوت يعمل فقط في المجموعات المسجلة لدينا.\n\n"
-        "🌟 لتسجيل مجموعتك أو لأي استفسار، تواصل معنا من الزر أدناه 👇"
-    )
+    user_id = message.from_user.id
+    if message.chat.type != 'private':
+        return
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 تسجيل مجموعتك الآن", url="https://t.me/ql_om")],
-        [InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")],
-        [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
-    ])
+    # تحقق إذا كان أدمن في أي مجموعة مسموحة
+    admin_groups = []
+    for gid in ALLOWED_GROUP_IDS:
+        if await is_admin(gid, user_id):
+            chat = await bot.get_chat(gid)
+            admin_groups.append((gid, chat.title or f"Group {gid}"))
 
-    await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
+    if admin_groups:
+        # لوحة تحكم
+        intro_text = "🛡️ <b>مرحباً بك في لوحة تحكم بوت الحارس الأمني!</b>\n\nاختر المجموعة التي تريد إدارتها:"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+        for gid, title in admin_groups:
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text=f"إدارة {title}", callback_data=f"manage_{gid}")])
+        keyboard.inline_keyboard.append([InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")])
+        await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
+    else:
+        # الرسالة القديمة لغير الأدمن
+        intro_text = (
+            "🛡️ <b>مرحباً بك في بوت الحارس الأمني الذكي!</b>\n\n"
+            "🔒 <i>هذا البوت مصمم خصيصًا للحفاظ على أمان مجموعاتك من السبام، الأرقام، والروابط المشبوهة. يعمل بذكاء عالي لكشف المخالفات تلقائيًا، مع حظر فوري للمخالفين.</i>\n\n"
+            "📌 <b>ملاحظة:</b> البوت يعمل فقط في المجموعات المسجلة لدينا.\n\n"
+            "🌟 لتسجيل مجموعتك أو لأي استفسار، تواصل معنا من الزر أدناه 👇"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📝 تسجيل مجموعتك الآن", url="https://t.me/ql_om")],
+            [InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")],
+            [InlineKeyboardButton(text="🌟 معلومات إضافية", callback_data="more_info")]
+        ])
+
+        await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
 
 # ================== handler الـ callback ==================
 @dp.callback_query()
 async def handle_callback_query(callback: types.CallbackQuery):
-    if callback.data == "more_info":
+    data = callback.data
+    if data == "more_info":
         more_info_text = (
             "🛡️ <b>تفاصيل كاملة عن بوت «الحارس الأمني» الذكي</b>\n\n"
 
@@ -160,10 +191,73 @@ async def handle_callback_query(callback: types.CallbackQuery):
         await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
         await callback.answer()
 
-# ================== handler العام لكل الرسائل الأخرى (آخر شيء) ==================
+    elif data.startswith("manage_"):
+        group_id = int(data.split("_")[1])
+        if group_id not in settings:
+            await callback.answer("مجموعة غير مدعومة.")
+            return
+
+        current_mode = settings[group_id]['mode']
+        current_duration = settings[group_id]['mute_duration']
+        duration_str = f"{current_duration // 3600} ساعات" if current_duration < 86400 else f"{current_duration // 86400} أيام"
+
+        text = f"🛡️ <b>لوحة تحكم للمجموعة ID: {group_id}</b>\n\n"
+        text += f"الوضع الحالي: {current_mode}\n"
+        if 'mute' in current_mode:
+            text += f"مدة الكتم: {duration_str}\n\n"
+
+        text += "اختر الوضع:"
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="كتم عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_mute")],
+            [InlineKeyboardButton(text="حظر عند المخالفة الأولى", callback_data=f"set_mode_{group_id}_ban")],
+            [InlineKeyboardButton(text="كتم الأولى + حظر الثانية", callback_data=f"set_mode_{group_id}_mute_then_ban")],
+            [InlineKeyboardButton(text="تحديد مدة الكتم", callback_data=f"set_duration_{group_id}")]
+        ])
+
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+
+    elif data.startswith("set_mode_"):
+        parts = data.split("_")
+        group_id = int(parts[2])
+        mode = "_".join(parts[3:])
+        if group_id in settings:
+            settings[group_id]['mode'] = mode
+            await callback.answer(f"تم تغيير الوضع إلى: {mode}")
+            # إعادة عرض اللوحة
+            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
+        else:
+            await callback.answer("خطأ.")
+
+    elif data.startswith("set_duration_"):
+        group_id = int(data.split("_")[2])
+        text = "اختر مدة الكتم:"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="1 ساعة", callback_data=f"duration_{group_id}_3600")],
+            [InlineKeyboardButton(text="1 يوم", callback_data=f"duration_{group_id}_86400")],
+            [InlineKeyboardButton(text="1 أسبوع", callback_data=f"duration_{group_id}_604800")],
+            [InlineKeyboardButton(text="1 شهر", callback_data=f"duration_{group_id}_2592000")],
+        ])
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+
+    elif data.startswith("duration_"):
+        parts = data.split("_")
+        group_id = int(parts[1])
+        duration = int(parts[2])
+        if group_id in settings:
+            settings[group_id]['mute_duration'] = duration
+            await callback.answer(f"تم تحديد مدة الكتم إلى {duration} ثواني.")
+            # إعادة عرض اللوحة
+            await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
+        else:
+            await callback.answer("خطأ.")
+
+# ================== handler العام لكل الرسائل الأخرى ==================
 @dp.message()
 async def check_message(message: types.Message):
-    # الخاص: رد على أي رسالة (غير /start لأنه معالج بالفعل فوق)
+    # الخاص: رد على أي رسالة (غير /start)
     if message.chat.type == 'private':
         contact_text = (
             "🛡️ <b>شكرًا لاهتمامك ببوت الحارس الأمني!</b>\n\n"
@@ -181,11 +275,11 @@ async def check_message(message: types.Message):
         return
 
     # المجموعات
-    if message.chat.id not in ALLOWED_GROUP_IDS:
+    chat_id = message.chat.id
+    if chat_id not in ALLOWED_GROUP_IDS:
         return
 
     user_id = message.from_user.id
-    chat_id = message.chat.id
 
     if await is_admin(chat_id, user_id):
         return
@@ -199,37 +293,64 @@ async def check_message(message: types.Message):
     except Exception as e:
         logger.warning(f"فشل حذف الرسالة {message.message_id}: {e}")
 
-    if not await is_banned(chat_id, user_id):
-        try:
-            await bot.ban_chat_member(chat_id, user_id)
-            banned = True
-        except Exception as e:
-            logger.warning(f"فشل حظر العضو {user_id}: {e}")
-            banned = False
-    else:
-        banned = False
-
+    mode = settings[chat_id]['mode']
+    mute_duration = settings[chat_id]['mute_duration']
     full_name = message.from_user.full_name
+    notification = ""
+    action_taken = False
 
-    if banned:
-        notification = (
-            f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n"
-            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-            f"📛 السبب: نشر سبام (رقم هاتف أو رابط مشبوه)\n"
-            f"🛡️ المجموعة محمية"
-        )
-    else:
-        notification = (
-            f"🗑️ <b>تم حذف رسالة سبام</b>\n\n"
-            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-            f"⚠️ العضو محظور مسبقًا"
-        )
+    if mode == 'ban':
+        if not await is_banned(chat_id, user_id):
+            try:
+                await bot.ban_chat_member(chat_id, user_id)
+                action_taken = True
+                notification = f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+            except Exception as e:
+                logger.warning(f"فشل حظر {user_id}: {e}")
+    elif mode == 'mute':
+        try:
+            until_date = int(time.time()) + mute_duration
+            await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
+            action_taken = True
+            duration_str = f"{mute_duration // 3600} ساعات" if mute_duration < 86400 else f"{mute_duration // 86400} أيام"
+            notification = f"🔇 <b>تم كتم العضو</b> لمدة {duration_str}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+        except Exception as e:
+            logger.warning(f"فشل كتم {user_id}: {e}")
+    elif mode == 'mute_then_ban':
+        if user_id not in violations[chat_id]:
+            violations[chat_id][user_id] = 0
+        violations[chat_id][user_id] += 1
+        if violations[chat_id][user_id] == 1:
+            try:
+                until_date = int(time.time()) + mute_duration
+                await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
+                action_taken = True
+                duration_str = f"{mute_duration // 3600} ساعات" if mute_duration < 86400 else f"{mute_duration // 86400} أيام"
+                notification = f"🔇 <b>تم كتم العضو (مخالفة أولى)</b> لمدة {duration_str}\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+            except Exception as e:
+                logger.warning(f"فشل كتم {user_id}: {e}")
+        else:
+            if not await is_banned(chat_id, user_id):
+                try:
+                    await bot.ban_chat_member(chat_id, user_id)
+                    action_taken = True
+                    notification = f"🚫 <b>تم حظر العضو نهائيًا (مخالفة ثانية)</b>\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n📛 السبب: نشر سبام\n🛡️ المجموعة محمية"
+                except Exception as e:
+                    logger.warning(f"فشل حظر {user_id}: {e}")
 
-    try:
-        notify_msg = await bot.send_message(chat_id, notification)
-        asyncio.create_task(delete_after_delay(notify_msg, 120))
-    except Exception as e:
-        logger.warning(f"فشل إرسال الإشعار: {e}")
+    if notification:
+        try:
+            notify_msg = await bot.send_message(chat_id, notification)
+            asyncio.create_task(delete_after_delay(notify_msg, 120))
+        except Exception as e:
+            logger.warning(f"فشل إرسال الإشعار: {e}")
+    elif not action_taken:
+        notification = f"🗑️ <b>تم حذف رسالة سبام</b>\n\n👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n⚠️ العضو محظور مسبقًا"
+        try:
+            notify_msg = await bot.send_message(chat_id, notification)
+            asyncio.create_task(delete_after_delay(notify_msg, 120))
+        except Exception as e:
+            logger.warning(f"فشل إرسال الإشعار: {e}")
 
 async def delete_after_delay(message: types.Message, delay: int = 120):
     await asyncio.sleep(delay)
