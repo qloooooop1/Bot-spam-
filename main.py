@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+# قاعدة البيانات في قناة تيليجرام
+DB_CHAT_ID = -1002370282238  # Chat ID للقناة التي ستكون قاعدة البيانات
+SETTINGS_MESSAGE_ID = None  # سيتم تحديده تلقائيًا
+
 # تحويل الأرقام العربية إلى لاتينية
 def normalize_digits(text: str) -> str:
     trans = str.maketrans(
@@ -102,8 +106,6 @@ def contains_spam(text: str) -> bool:
     return False
 
 # إعدادات جديدة
-SETTINGS_FILE = "settings.json"
-
 settings = {}  # {group_id: {'mode': 'ban' | 'mute' | 'mute_then_ban', 'mute_duration': seconds}}
 violations = {}  # {group_id: {user_id: count}}
 
@@ -119,21 +121,40 @@ unit_seconds = {
 
 unit_to_text_dict = {'minute': 'دقيقة', 'hour': 'ساعة', 'day': 'يوم', 'month': 'شهر', 'year': 'سنة'}
 
-def load_settings():
-    global settings
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, 'r') as f:
-            loaded = json.load(f)
-            settings = {k: v for k, v in loaded.items()}
+async def load_settings_from_tg():
+    global settings, SETTINGS_MESSAGE_ID
+    settings = {}
     # ضمان وجود الإعدادات الافتراضية
     for gid in ALLOWED_GROUP_IDS:
         group_str = str(gid)
-        if group_str not in settings:
-            settings[group_str] = {'mode': 'ban', 'mute_duration': 86400}
+        settings[group_str] = {'mode': 'ban', 'mute_duration': 86400}
 
-def save_settings():
-    with open(SETTINGS_FILE, 'w') as f:
-        json.dump(settings, f)
+    try:
+        # جلب آخر رسالة في القناة
+        updates = await bot.get_updates(limit=1, allowed_updates=["message"])
+        messages = [update.message for update in updates if update.message and update.message.chat.id == DB_CHAT_ID]
+        if messages:
+            text = messages[0].text
+            loaded_settings = json.loads(text)
+            settings.update(loaded_settings)
+            SETTINGS_MESSAGE_ID = messages[0].message_id
+            logger.info(f"تم تحميل الإعدادات من تيليجرام: {settings}")
+    except Exception as e:
+        logger.warning(f"فشل تحميل الإعدادات من تيليجرام: {e}")
+        # إذا فشل، استخدم الافتراضي وأرسل رسالة جديدة
+        await save_settings_to_tg()
+
+async def save_settings_to_tg():
+    text = json.dumps(settings)
+    try:
+        if SETTINGS_MESSAGE_ID:
+            await bot.edit_message_text(chat_id=DB_CHAT_ID, message_id=SETTINGS_MESSAGE_ID, text=text)
+        else:
+            msg = await bot.send_message(chat_id=DB_CHAT_ID, text=text)
+            SETTINGS_MESSAGE_ID = msg.message_id
+        logger.info("تم حفظ الإعدادات في تيليجرام")
+    except Exception as e:
+        logger.error(f"خطأ في حفظ الإعدادات في تيليجرام: {e}")
 
 # تهيئة violations
 for gid in ALLOWED_GROUP_IDS:
@@ -268,7 +289,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
         if group_str in settings:
             settings[group_str]['mode'] = mode
             violations[group_id] = {}  # إعادة تعيين عدد المخالفات عند تغيير الوضع
-            save_settings()
+            await save_settings_to_tg()
             await callback.answer(f"تم تغيير الوضع إلى: {mode_to_text(mode)}")
             # إعادة عرض اللوحة
             await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
@@ -311,7 +332,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
             group_str = str(group_id)
             settings[group_str]['mute_duration'] = seconds
             violations[group_id] = {}  # إعادة تعيين عدد المخالفات عند تغيير المدة
-            save_settings()
+            await save_settings_to_tg()
             del temp_duration[group_id]
             await callback.answer("تم حفظ مدة الكتم بنجاح.")
             await handle_callback_query(types.CallbackQuery(id=callback.id, from_user=callback.from_user, chat_instance=callback.chat_instance, message=callback.message, data=f"manage_{group_id}"))
@@ -468,7 +489,7 @@ WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
 
 @app.on_event("startup")
 async def on_startup():
-    load_settings()
+    await load_settings_from_tg()  # تحميل الإعدادات تلقائيًا من القناة
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(url=WEBHOOK_URL)
@@ -478,7 +499,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    save_settings()
+    await save_settings_to_tg()  # حفظ الإعدادات تلقائيًا عند الإغلاق
     await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
