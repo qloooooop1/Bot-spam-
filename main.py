@@ -146,10 +146,7 @@ def seconds_to_value_unit(seconds: int):
     for unit, secs in sorted(unit_seconds.items(), key=lambda x: x[1], reverse=True):
         if seconds >= secs:
             value = seconds // secs
-            remainder = seconds % secs
-            if remainder == 0:
-                return value, unit
-            # إذا لم يكن مضاعفاً تماماً، نستخدم الوحدة الأكبر مع الكسر، لكن للبساطة نستخدم أكبر ممكن
+            return value, unit  # الآن نعيد حتى لو لم يكن remainder 0، لكن نختار الأكبر
     # fallback إلى دقائق
     return seconds // 60, 'minute'
 
@@ -270,6 +267,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
         group_str = str(group_id)
         if group_str in settings:
             settings[group_str]['mode'] = mode
+            violations[group_id] = {}  # إعادة تعيين عدد المخالفات عند تغيير الوضع
             save_settings()
             await callback.answer(f"تم تغيير الوضع إلى: {mode_to_text(mode)}")
             # إعادة عرض اللوحة
@@ -312,6 +310,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
             seconds = temp_duration[group_id]['value'] * unit_seconds[temp_duration[group_id]['unit']]
             group_str = str(group_id)
             settings[group_str]['mute_duration'] = seconds
+            violations[group_id] = {}  # إعادة تعيين عدد المخالفات عند تغيير المدة
             save_settings()
             del temp_duration[group_id]
             await callback.answer("تم حفظ مدة الكتم بنجاح.")
@@ -411,7 +410,7 @@ async def check_message(message: types.Message):
                 logger.warning(f"فشل حظر {user_id}: {e}")
     elif mode == 'mute':
         try:
-            until_date = int(time.time()) + mute_duration if mute_duration > 0 else 0
+            until_date = int(time.time()) + mute_duration if mute_duration > 30 else 0  # إذا أقل من 30 ثانية، اجعله دائمًا
             await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
             action_taken = True
             duration_value, duration_unit = seconds_to_value_unit(mute_duration)
@@ -424,7 +423,7 @@ async def check_message(message: types.Message):
         violations[chat_id][user_id] += 1
         if violations[chat_id][user_id] == 1:
             try:
-                until_date = int(time.time()) + mute_duration if mute_duration > 0 else 0
+                until_date = int(time.time()) + mute_duration if mute_duration > 30 else 0  # إذا أقل من 30 ثانية، اجعله دائمًا
                 await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
                 action_taken = True
                 duration_value, duration_unit = seconds_to_value_unit(mute_duration)
