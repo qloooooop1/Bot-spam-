@@ -129,7 +129,14 @@ def seconds_to_value_unit(seconds: int):
             value = seconds // secs
             return value, unit
     return seconds // 60, 'minute'
-
+def mode_to_text(mode):
+    if mode == 'mute':
+        return 'كتم عند المخالفة الأولى'
+    elif mode == 'ban':
+        return 'حظر عند المخالفة الأولى'
+    elif mode == 'mute_then_ban':
+        return 'كتم الأولى + حظر الثانية'
+    return mode
 # ================== وظائف قاعدة البيانات في تيليجرام ==================
 async def load_settings_from_tg():
     global settings, SETTINGS_MESSAGE_ID
