@@ -3,3 +3,5 @@ fastapi==0.115.0
 uvicorn==0.30.6
 pycountry
 emoji-country-flag
+python-multipart==0.0.6
+aiofiles==23.2.1
