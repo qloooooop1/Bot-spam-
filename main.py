@@ -13,9 +13,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-import pycountry
-import flag
 
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")
@@ -57,6 +54,7 @@ temp_keywords = {}
 temp_membership = {}
 temp_countries = {}
 temp_exceptions = {}
+temp_links = {}
 
 # وحدات الوقت
 unit_seconds = {
@@ -112,16 +110,12 @@ async def is_banned(chat_id: int, user_id: int) -> bool:
     except Exception:
         return True
 
-async def get_user_country(user_id: int) -> Optional[str]:
-    """الحصول على دولة المستخدم من معلوماته"""
+async def get_user_join_date(chat_id: int, user_id: int):
+    """الحصول على تاريخ انضمام العضو"""
     try:
-        user = await bot.get_chat(user_id)
-        if user.language_code:
-            # محاولة استخراج الدولة من لغة المستخدم
-            lang = user.language_code.upper()
-            country = pycountry.languages.get(alpha_2=lang)
-            if country:
-                return country.name
+        member = await bot.get_chat_member(chat_id, user_id)
+        if member.joined_date:
+            return datetime.fromtimestamp(member.joined_date)
     except:
         pass
     return None
@@ -184,25 +178,24 @@ async def load_settings_from_tg():
             'banned_keywords': [],
             'keyword_action': 'mute',
             'keyword_mute_duration': 3600,
-            'membership_duration': 0,
-            'membership_unit': 'hour',
-            'membership_action': 'mute',
+            'membership_days': 7,
+            'membership_action': 'strict',
             'banned_countries': [],
             'country_detection_enabled': False,
             'country_action': 'ban',
             'banned_links': [],
             'link_action': 'delete',
+            'exempted_days': 0,
             'exempted_users': [],
             'warnings': {}
         }
 
     try:
-        dummy = await bot.send_message(DB_CHAT_ID, "تحميل الإعدادات...")
-        history = await bot.get_chat_history(DB_CHAT_ID, limit=50)
-        await bot.delete_message(DB_CHAT_ID, dummy.message_id)
-
+        # محاولة تحميل الإعدادات من الرسائل
+        history = await bot.get_chat_messages(DB_CHAT_ID, limit=50)
+        
         json_msg = None
-        for msg in history[::-1]:
+        for msg in history:
             if msg.text and msg.text.strip().startswith('{') and msg.text.strip().endswith('}'):
                 try:
                     loaded = json.loads(msg.text)
@@ -217,10 +210,6 @@ async def load_settings_from_tg():
             for group_str in settings:
                 if group_str in loaded:
                     settings[group_str].update(loaded[group_str])
-                    # تأكد من وجود جميع المفاتيح
-                    for key in settings[group_str]:
-                        if key not in loaded.get(group_str, {}):
-                            settings[group_str][key] = settings[group_str][key]
             SETTINGS_MESSAGE_ID = json_msg.message_id
         else:
             await save_settings_to_tg()
@@ -274,7 +263,7 @@ async def night_mode_checker():
                     await save_settings_to_tg()
         await asyncio.sleep(60)
 
-# ================== لوحات التحكم ==================
+# ================== لوحات التحكم مع شرح مفصل ==================
 def get_main_control_panel(group_id):
     group_str = str(group_id)
     current_mode = settings[group_str]['mode']
@@ -284,7 +273,104 @@ def get_main_control_panel(group_id):
     night_start = settings[group_str]['night_start']
     night_end = settings[group_str]['night_end']
     
-    # تحويل الوقت إلى صيغة 12 ساعة
+    text = f"🛡️ <b>لوحة تحكم الحارس الأمني</b>\n\n"
+    text += f"📊 <b>إحصائيات المجموعة:</b>\n"
+    text += f"• وضع الحماية: {mode_to_text(current_mode)}\n"
+    text += f"• مدة العقوبة: {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
+    text += f"• الوضع الليلي: {'✅ مفعل' if night_enabled else '❌ معطل'}\n"
+    text += f"• الكلمات الممنوعة: {len(settings[group_str]['banned_keywords'])} كلمة\n"
+    text += f"• الروابط الممنوعة: {len(settings[group_str]['banned_links'])} رابط\n"
+    text += f"• الدول المحظورة: {len(settings[group_str]['banned_countries'])} دولة\n"
+    text += f"• أيام استثناء الأعضاء: {settings[group_str]['exempted_days']} يوم\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚔️ إعدادات الحماية الأساسية", callback_data=f"protection_menu_{group_id}")],
+        [InlineKeyboardButton(text="🔤 إدارة الكلمات الممنوعة", callback_data=f"keywords_menu_{group_id}")],
+        [InlineKeyboardButton(text="🔗 إدارة الروابط الممنوعة", callback_data=f"links_menu_{group_id}")],
+        [InlineKeyboardButton(text="🌍 إدارة الدول المحظورة", callback_data=f"countries_menu_{group_id}")],
+        [InlineKeyboardButton(text="👤 إدارة الأعضاء والاستثناءات", callback_data=f"members_menu_{group_id}")],
+        [InlineKeyboardButton(text="🔄 تحديث اللوحة", callback_data=f"refresh_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+def get_protection_menu(group_id):
+    group_str = str(group_id)
+    
+    text = "🛡️ <b>إعدادات الحماية الأساسية</b>\n\n"
+    text += "📌 <i>هذا القسم يتحكم في آلية الحماية الأساسية للبوت ضد الرسائل المخالفة</i>\n\n"
+    text += "🔹 <b>وضع الحماية:</b> يحدد نوع العقوبة التلقائية للمخالفين\n"
+    text += "🔹 <b>مدة العقوبة:</b> يحدد فترة الكتم إذا كانت العقوبة كتم\n"
+    text += "🔹 <b>الوضع الليلي:</b> يوقف النشر لغير الإداريين في أوقات محددة\n\n"
+    text += "اختر الإعداد الذي تريد تعديله:"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚔️ وضع الحماية", callback_data=f"mode_menu_{group_id}")],
+        [InlineKeyboardButton(text="⏱️ مدة العقوبة", callback_data=f"duration_menu_{group_id}")],
+        [InlineKeyboardButton(text="🌙 الوضع الليلي", callback_data=f"night_menu_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع للوحة الرئيسية", callback_data=f"back_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+def get_mode_menu(group_id):
+    group_str = str(group_id)
+    current_mode = settings[group_str]['mode']
+    
+    text = "⚔️ <b>إعدادات وضع الحماية</b>\n\n"
+    text += "📖 <i>هذا الإعداد يحدد كيفية تعامل البوت مع الأعضاء الذين ينشرون محتوى مخالف:</i>\n\n"
+    text += "🔸 <b>كتم عند المخالفة الأولى:</b> يكتم العضو مباشرة عند أول مخالفة\n"
+    text += "🔸 <b>حظر عند المخالفة الأولى:</b> يحظر العضو نهائيًا عند أول مخالفة\n"
+    text += "🔸 <b>كتم الأولى + حظر الثانية:</b> يعطي فرصة ثم يحظر عند التكرار\n"
+    text += "🔸 <b>حذف الرسالة فقط:</b> يحذف المخالفة بدون عقاب العضو\n"
+    text += "🔸 <b>تحذير ثم كتم:</b> يعطي تحذيرًا أولاً ثم يكتم\n"
+    text += "🔸 <b>تحذير ثم حظر:</b> يعطي تحذيرًا أولاً ثم يحظر\n\n"
+    text += f"<b>الوضع الحالي:</b> {mode_to_text(current_mode)}\n\n"
+    text += "اختر الوضع المناسب:"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✅ كتم أولى" if current_mode == 'mute' else "كتم أولى", callback_data=f"mode_mute_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ حظر فوري" if current_mode == 'ban' else "حظر فوري", callback_data=f"mode_ban_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ كتم ثم حظر" if current_mode == 'mute_then_ban' else "كتم ثم حظر", callback_data=f"mode_mute_then_ban_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ حذف فقط" if current_mode == 'delete_only' else "حذف فقط", callback_data=f"mode_delete_only_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ تحذير ثم كتم" if current_mode == 'warn_then_mute' else "تحذير ثم كتم", callback_data=f"mode_warn_then_mute_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ تحذير ثم حظر" if current_mode == 'warn_then_ban' else "تحذير ثم حظر", callback_data=f"mode_warn_then_ban_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+def get_duration_menu(group_id):
+    group_str = str(group_id)
+    current_duration = settings[group_str]['mute_duration']
+    duration_value, duration_unit = seconds_to_value_unit(current_duration)
+    
+    text = "⏱️ <b>إعدادات مدة العقوبة</b>\n\n"
+    text += "📖 <i>هذا الإعداد يحدد مدة الكتم عندما تكون العقوبة هي الكتم:</i>\n\n"
+    text += "🔸 يمكنك ضبط المدة من دقيقة واحدة إلى سنة كاملة\n"
+    text += "🔸 المدة تؤثر فقط على عقوبات الكتم\n"
+    text += "🔸 العقوبات الأخرى (كالحظر) لا تتأثر بهذا الإعداد\n\n"
+    text += f"<b>المدة الحالية:</b> {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n\n"
+    text += "اختر المدة المناسبة:"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1 دقيقة", callback_data=f"set_duration_60_{group_id}")],
+        [InlineKeyboardButton(text="1 ساعة", callback_data=f"set_duration_3600_{group_id}")],
+        [InlineKeyboardButton(text="1 يوم", callback_data=f"set_duration_86400_{group_id}")],
+        [InlineKeyboardButton(text="1 أسبوع", callback_data=f"set_duration_604800_{group_id}")],
+        [InlineKeyboardButton(text="1 شهر", callback_data=f"set_duration_2592000_{group_id}")],
+        [InlineKeyboardButton(text="تخصيص مدة", callback_data=f"custom_duration_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+def get_night_menu(group_id):
+    group_str = str(group_id)
+    night_enabled = settings[group_str]['night_mode_enabled']
+    night_start = settings[group_str]['night_start']
+    night_end = settings[group_str]['night_end']
+    
     def format_12h(time_str):
         try:
             hour, minute = map(int, time_str.split(':'))
@@ -296,42 +382,22 @@ def get_main_control_panel(group_id):
         except:
             return time_str
     
-    night_start_12h = format_12h(night_start)
-    night_end_12h = format_12h(night_end)
-    
-    text = f"🛡️ <b>لوحة تحكم الحارس الأمني</b>\n\n"
-    text += f"📊 <b>إحصائيات المجموعة:</b>\n"
-    text += f"• وضع الحماية: {mode_to_text(current_mode)}\n"
-    text += f"• مدة الكتم: {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
-    text += f"• الوضع الليلي: {'✅ مفعل' if night_enabled else '❌ معطل'}\n"
-    text += f"• الكلمات الممنوعة: {len(settings[group_str]['banned_keywords'])} كلمة\n"
-    text += f"• الروابط الممنوعة: {len(settings[group_str]['banned_links'])} رابط\n"
-    text += f"• الدول المحظورة: {len(settings[group_str]['banned_countries'])} دولة\n"
-    text += f"• الأعضاء المستثنون: {len(settings[group_str]['exempted_users'])} عضو\n"
+    text = "🌙 <b>إعدادات الوضع الليلي</b>\n\n"
+    text += "📖 <i>هذا الإعداد يوقف نشاط الأعضاء العاديين خلال ساعات محددة:</i>\n\n"
+    text += "🔸 يمنع الأعضاء غير الإداريين من النشر خلال الفترة المحددة\n"
+    text += "🔸 يعرض رسالة تلقائية عند التفعيل والإلغاء\n"
+    text += "🔸 مفيد للحفاظ على هدوء المجموعة ليلاً\n"
+    text += "🔸 الإداريون يستطيعون النشر في أي وقت\n\n"
+    text += f"<b>الحالة الحالية:</b> {'✅ مفعل' if night_enabled else '❌ معطل'}\n"
+    text += f"<b>وقت البدء:</b> {night_start} ({format_12h(night_start)})\n"
+    text += f"<b>وقت الانتهاء:</b> {night_end} ({format_12h(night_end)})\n\n"
+    text += "اختر الإعداد الذي تريد تعديله:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚙️ إعدادات الحماية", callback_data=f"protection_menu_{group_id}")],
-        [InlineKeyboardButton(text="🔤 الكلمات الممنوعة", callback_data=f"keywords_menu_{group_id}")],
-        [InlineKeyboardButton(text="🔗 الروابط الممنوعة", callback_data=f"links_menu_{group_id}")],
-        [InlineKeyboardButton(text="🌍 حظر الدول", callback_data=f"countries_menu_{group_id}")],
-        [InlineKeyboardButton(text="👤 إدارة الأعضاء", callback_data=f"members_menu_{group_id}")],
-        [InlineKeyboardButton(text="📊 الإحصائيات", callback_data=f"stats_{group_id}")],
-        [InlineKeyboardButton(text="🔄 تحديث", callback_data=f"refresh_{group_id}")]
-    ])
-    
-    return text, keyboard
-
-def get_protection_menu(group_id):
-    group_str = str(group_id)
-    
-    text = "🛡️ <b>إعدادات الحماية الرئيسية</b>\n\n"
-    text += "اختر القسم الذي تريد تعديله:"
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚔️ وضع الحماية", callback_data=f"mode_menu_{group_id}")],
-        [InlineKeyboardButton(text="⏱️ مدة العقوبات", callback_data=f"duration_menu_{group_id}")],
-        [InlineKeyboardButton(text="🌙 الوضع الليلي", callback_data=f"night_menu_{group_id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
+        [InlineKeyboardButton(text=f"{'❌ تعطيل' if night_enabled else '✅ تفعيل'} الوضع الليلي", callback_data=f"night_toggle_{group_id}")],
+        [InlineKeyboardButton(text="⏰ تعديل وقت البدء", callback_data=f"edit_night_start_{group_id}")],
+        [InlineKeyboardButton(text="⏰ تعديل وقت الانتهاء", callback_data=f"edit_night_end_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
     ])
     
     return text, keyboard
@@ -344,27 +410,28 @@ def get_keywords_menu(group_id):
     dur_value, dur_unit = seconds_to_value_unit(keyword_duration)
     
     text = "🔤 <b>إدارة الكلمات الممنوعة</b>\n\n"
-    text += f"• عدد الكلمات: {len(keywords)}\n"
-    text += f"• العقوبة: {mode_to_text(keyword_action)}\n"
-    if keyword_action in ['mute', 'mute_then_ban']:
-        text += f"• مدة الكتم: {dur_value} {unit_to_text_dict.get(dur_unit, dur_unit)}\n\n"
+    text += "📖 <i>هذا القسم لإدارة الكلمات والعبارات المحظورة في المجموعة:</i>\n\n"
+    text += "🔸 يمكنك إضافة أي كلمة أو عبارة تريد منعها\n"
+    text += "🔸 البوت يكشف الكلمات حتى لو كانت مختلطة بحروف أخرى\n"
+    text += "🔸 يمكنك تحديد عقوبة خاصة للكلمات الممنوعة\n\n"
+    text += f"<b>عدد الكلمات:</b> {len(keywords)} كلمة\n"
+    text += f"<b>العقوبة المحددة:</b> {mode_to_text(keyword_action)}\n"
+    if keyword_action in ['mute', 'mute_then_ban', 'warn_then_mute']:
+        text += f"<b>مدة الكتم:</b> {dur_value} {unit_to_text_dict.get(dur_unit, dur_unit)}\n\n"
+    else:
+        text += "\n"
     
     if keywords:
-        text += "📝 <b>الكلمات الحالية:</b>\n"
-        for i, word in enumerate(keywords[:10], 1):
-            text += f"{i}. {word}\n"
-        if len(keywords) > 10:
-            text += f"... و{len(keywords)-10} كلمة أخرى\n"
-    else:
-        text += "⚠️ لا توجد كلمات ممنوعة حالياً\n\n"
-    
-    text += "📌 <i>يمكنك إضافة كلمات أو روابط كاملة للكشف عنها</i>"
+        text += "📝 <b>آخر 5 كلمات ممنوعة:</b>\n"
+        for i, word in enumerate(keywords[-5:], 1):
+            text += f"{i}. {word[:30]}{'...' if len(word) > 30 else ''}\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ إضافة كلمة", callback_data=f"add_keyword_{group_id}")],
+        [InlineKeyboardButton(text="➕ إضافة كلمة جديدة", callback_data=f"add_keyword_{group_id}")],
         [InlineKeyboardButton(text="🗑️ حذف كلمة", callback_data=f"remove_keyword_{group_id}")],
         [InlineKeyboardButton(text="⚖️ تغيير العقوبة", callback_data=f"keyword_action_{group_id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
+        [InlineKeyboardButton(text="📋 عرض جميع الكلمات", callback_data=f"show_keywords_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
     ])
     
     return text, keyboard
@@ -375,23 +442,24 @@ def get_links_menu(group_id):
     link_action = settings[group_str]['link_action']
     
     text = "🔗 <b>إدارة الروابط الممنوعة</b>\n\n"
-    text += f"• عدد الروابط: {len(links)}\n"
-    text += f"• العقوبة: {'حذف الرسالة فقط' if link_action == 'delete' else mode_to_text(link_action)}\n\n"
+    text += "📖 <i>هذا القسم لإدارة الروابط والمواقع المحظورة في المجموعة:</i>\n\n"
+    text += "🔸 يمكنك إضافة أي رابط تريد منعه (مثال: google.com, facebook.com)\n"
+    text += "🔸 البوت يكشف الروابط حتى لو كانت مختصرة أو مخفية\n"
+    text += "🔸 الروابط المسموح افتراضيًا: YouTube, Instagram, X/Twitter\n\n"
+    text += f"<b>عدد الروابط:</b> {len(links)} رابط\n"
+    text += f"<b>العقوبة المحددة:</b> {'حذف الرسالة فقط' if link_action == 'delete' else mode_to_text(link_action)}\n\n"
     
     if links:
-        text += "📝 <b>الروابط الحالية:</b>\n"
-        for i, link in enumerate(links[:5], 1):
-            text += f"{i}. {link}\n"
-        if len(links) > 5:
-            text += f"... و{len(links)-5} رابط آخر\n"
-    else:
-        text += "⚠️ لا توجد روابط ممنوعة حالياً\n\n"
+        text += "📝 <b>آخر 5 روابط ممنوعة:</b>\n"
+        for i, link in enumerate(links[-5:], 1):
+            text += f"{i}. {link[:30]}{'...' if len(link) > 30 else ''}\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ إضافة رابط", callback_data=f"add_link_{group_id}")],
+        [InlineKeyboardButton(text="➕ إضافة رابط جديد", callback_data=f"add_link_{group_id}")],
         [InlineKeyboardButton(text="🗑️ حذف رابط", callback_data=f"remove_link_{group_id}")],
         [InlineKeyboardButton(text="⚖️ تغيير العقوبة", callback_data=f"link_action_{group_id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
+        [InlineKeyboardButton(text="📋 عرض جميع الروابط", callback_data=f"show_links_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
     ])
     
     return text, keyboard
@@ -402,83 +470,175 @@ def get_countries_menu(group_id):
     country_action = settings[group_str]['country_action']
     detection_enabled = settings[group_str]['country_detection_enabled']
     
-    text = "🌍 <b>إدارة حظر الدول</b>\n\n"
-    text += f"• كشف الدولة: {'✅ مفعل' if detection_enabled else '❌ معطل'}\n"
-    text += f"• العقوبة: {mode_to_text(country_action)}\n"
-    text += f"• عدد الدول المحظورة: {len(banned_countries)}\n\n"
+    text = "🌍 <b>إدارة الدول المحظورة</b>\n\n"
+    text += "📖 <i>هذا القسم لمنع الأعضاء من دول محددة من الانضمام للمجموعة:</i>\n\n"
+    text += "🔸 يمكنك حظر دول كاملة من الانضمام للمجموعة\n"
+    text += "🔸 البوت يحاول كشف دولة العضو من إعدادات جهازه\n"
+    text += "🔸 هذه الميزة تعمل عند محاولة الانضمام أو عند أول رسالة\n\n"
+    text += f"<b>كشف الدولة:</b> {'✅ مفعل' if detection_enabled else '❌ معطل'}\n"
+    text += f"<b>العقوبة المحددة:</b> {mode_to_text(country_action)}\n"
+    text += f"<b>عدد الدول المحظورة:</b> {len(banned_countries)} دولة\n\n"
     
     if banned_countries:
-        text += "🚫 <b>الدول المحظورة:</b>\n"
-        for i, country in enumerate(banned_countries[:5], 1):
-            try:
-                flag_emoji = flag.flag(country[:2])
-            except:
-                flag_emoji = "🏴"
-            text += f"{flag_emoji} {country}\n"
-        if len(banned_countries) > 5:
-            text += f"... و{len(banned_countries)-5} دولة أخرى\n"
+        text += "📝 <b>آخر 5 دول محظورة:</b>\n"
+        for i, country in enumerate(banned_countries[-5:], 1):
+            text += f"{i}. {country}\n"
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'❌ تعطيل' if detection_enabled else '✅ تفعيل'} كشف الدولة", 
-                              callback_data=f"toggle_country_detect_{group_id}")],
-        [InlineKeyboardButton(text="➕ إضافة دولة", callback_data=f"add_country_{group_id}")],
-        [InlineKeyboardButton(text="🗑️ حذف دولة", callback_data=f"remove_country_{group_id}")],
-        [InlineKeyboardButton(text="⚖️ تغيير العقوبة", callback_data=f"country_action_{group_id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
+    # قائمة الدول الشائعة
+    common_countries = [
+        ("🇸🇦", "السعودية", "SA"),
+        ("🇦🇪", "الإمارات", "AE"),
+        ("🇶🇦", "قطر", "QA"),
+        ("🇰🇼", "الكويت", "KW"),
+        ("🇧🇭", "البحرين", "BH"),
+        ("🇴🇲", "عمان", "OM"),
+        ("🇺🇸", "الولايات المتحدة", "US"),
+        ("🇬🇧", "المملكة المتحدة", "GB"),
+        ("🇮🇳", "الهند", "IN"),
+        ("🇵🇰", "بااكستان", "PK"),
+        ("🇪🇬", "مصر", "EG"),
+        ("🇯🇴", "الأردن", "JO"),
+        ("🇱🇧", "لبنان", "LB"),
+        ("🇸🇾", "سوريا", "SY"),
+        ("🇮🇶", "العراق", "IQ"),
+        ("🇾🇪", "اليمن", "YE"),
+        ("🇩🇿", "الجزائر", "DZ"),
+        ("🇲🇦", "المغرب", "MA"),
+        ("🇹🇳", "تونس", "TN"),
+        ("🇱🇾", "ليبيا", "LY"),
+        ("🇸🇩", "السودان", "SD"),
+        ("🇸🇴", "الصومال", "SO"),
+        ("🇮🇷", "إيران", "IR"),
+        ("🇹🇷", "تركيا", "TR"),
+        ("🇷🇺", "روسيا", "RU"),
+        ("🇨🇳", "الصين", "CN"),
+        ("🇯🇵", "اليابان", "JP"),
+        ("🇰🇷", "كوريا الجنوبية", "KR"),
+        ("🇧🇷", "البرازيل", "BR"),
+        ("🇫🇷", "فرنسا", "FR"),
+        ("🇩🇪", "ألمانيا", "DE"),
+        ("🇮🇹", "إيطاليا", "IT"),
+        ("🇪🇸", "إسبانيا", "ES")
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    # أزرار التحكم
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text=f"{'❌ تعطيل' if detection_enabled else '✅ تفعيل'} الكشف", callback_data=f"toggle_country_detect_{group_id}"),
+        InlineKeyboardButton(text="⚖️ تغيير العقوبة", callback_data=f"country_action_{group_id}")
+    ])
+    
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="➕ إضافة دولة يدويًا", callback_data=f"add_country_manual_{group_id}"),
+        InlineKeyboardButton(text="🗑️ حذف دولة", callback_data=f"remove_country_{group_id}")
+    ])
+    
+    # أزرار الدول الشائعة (4 صفوف)
+    row = []
+    for i, (flag, name, code) in enumerate(common_countries[:8]):
+        if code not in banned_countries:
+            row.append(InlineKeyboardButton(text=f"{flag} {name}", callback_data=f"add_country_{code}_{group_id}"))
+        else:
+            row.append(InlineKeyboardButton(text=f"✅ {name}", callback_data=f"remove_country_{code}_{group_id}"))
+        if len(row) == 2:
+            keyboard.inline_keyboard.append(row)
+            row = []
+    
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="📋 عرض جميع الدول", callback_data=f"show_countries_{group_id}"),
+        InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")
     ])
     
     return text, keyboard
 
 def get_members_menu(group_id):
     group_str = str(group_id)
+    exempted_days = settings[group_str]['exempted_days']
     exempted_users = settings[group_str]['exempted_users']
-    membership_duration = settings[group_str]['membership_duration']
-    membership_unit = settings[group_str]['membership_unit']
+    membership_days = settings[group_str]['membership_days']
     membership_action = settings[group_str]['membership_action']
     
-    text = "👤 <b>إدارة الأعضاء</b>\n\n"
-    text += f"• الأعضاء المستثنون: {len(exempted_users)} عضو\n"
-    if membership_duration > 0:
-        text += f"• حماية الأعضاء الجدد: {membership_duration} {unit_to_text_dict.get(membership_unit, membership_unit)}\n"
-        text += f"• عقوبة المخالفة: {mode_to_text(membership_action)}\n\n"
-    else:
-        text += "• حماية الأعضاء الجدد: ❌ معطلة\n\n"
+    text = "👤 <b>إدارة الأعضاء والاستثناءات</b>\n\n"
+    text += "📖 <i>هذا القسم لإدارة سياسات المراقبة والاستثناءات للأعضاء:</i>\n\n"
     
-    text += "<i>يمكنك استثناء أعضاء من العقوبات أو تفعيل حماية للأعضاء الجدد</i>"
+    text += "🔸 <b>حماية الأعضاء الجدد:</b>\n"
+    text += "   • يضع الأعضاء الجدد تحت رقابة صارمة لمدة محددة\n"
+    text += "   • يتم مراقبة جميع رسائل العضو الجديد، سواء أرسل روابط أم لا\n"
+    text += "   • إذا ارتكب مخالفة خلال فترة المراقبة، يتم تطبيق عقوبة أشد\n"
+    text += "   • يمكنك ضبط مدة المراقبة (من 1 يوم إلى 365 يومًا) وسياسة العقاب\n\n"
+    
+    text += "🔸 <b>استثناء الأعضاء:</b>\n"
+    text += "   • يمكنك استثناء أعضاء من العقوبات بناءً على مدة انضمامهم\n"
+    text += "   • مثال: استثناء جميع الأعضاء الذين انضموا قبل 30 يومًا\n"
+    text += "   • أو استثناء عضو محدد يدويًا\n\n"
+    
+    text += f"<b>مدة حماية الجدد:</b> {membership_days} يوم\n"
+    text += f"<b>سياسة حماية الجدد:</b> {'مراقبة صارمة' if membership_action == 'strict' else 'مراقبة عادية'}\n"
+    text += f"<b>أيام الاستثناء:</b> {exempted_days} يوم (الأعضاء الأقدم من هذا معفيون)\n"
+    text += f"<b>أعضاء مستثنون يدويًا:</b> {len(exempted_users)} عضو\n\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👑 إضافة مستثنى", callback_data=f"add_exempt_{group_id}")],
-        [InlineKeyboardButton(text="🗑️ حذف مستثنى", callback_data=f"remove_exempt_{group_id}")],
-        [InlineKeyboardButton(text="🛡️ حماية الأعضاء الجدد", callback_data=f"membership_protection_{group_id}")],
-        [InlineKeyboardButton(text="📋 قائمة المستثنين", callback_data=f"list_exempt_{group_id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_menu_{group_id}")]
+        [InlineKeyboardButton(text="🛡️ إعدادات حماية الأعضاء الجدد", callback_data=f"membership_settings_{group_id}")],
+        [InlineKeyboardButton(text="👑 إعدادات استثناء الأعضاء", callback_data=f"exemption_settings_{group_id}")],
+        [InlineKeyboardButton(text="📋 قائمة المستثنين يدويًا", callback_data=f"list_exempted_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
     ])
     
     return text, keyboard
 
-def get_stats_panel(group_id):
+def get_membership_settings_menu(group_id):
     group_str = str(group_id)
-    violations = settings[group_str].get('violations', {})
-    warnings = settings[group_str].get('warnings', {})
+    membership_days = settings[group_str]['membership_days']
+    membership_action = settings[group_str]['membership_action']
     
-    total_violations = sum(violations.values())
-    total_warnings = sum(warnings.values())
-    
-    text = "📊 <b>إحصائيات الحماية</b>\n\n"
-    text += f"• إجمالي المخالفات: {total_violations}\n"
-    text += f"• إجمالي التحذيرات: {total_warnings}\n"
-    text += f"• الأعضاء المخالفون: {len(violations)}\n"
-    text += f"• الأعضاء المحذرون: {len(warnings)}\n\n"
-    
-    if violations:
-        text += "🔴 <b>أكثر الأعضاء مخالفة:</b>\n"
-        sorted_violations = sorted(violations.items(), key=lambda x: x[1], reverse=True)[:5]
-        for user_id, count in sorted_violations:
-            text += f"• العضو {user_id}: {count} مخالفة\n"
+    text = "🛡️ <b>إعدادات حماية الأعضاء الجدد</b>\n\n"
+    text += "📖 <i>هذه الميزة تضع الأعضاء الجدد تحت رقابة مشددة:</i>\n\n"
+    text += "🔸 <b>كيف تعمل:</b>\n"
+    text += "   1. أي عضو انضم منذ فترة أقل من المحددة يعتبر 'جديد'\n"
+    text += "   2. يتم مراقبة جميع رسائله بشكل مكثف\n"
+    text += "   3. عند المخالفة، تطبق عقوبة أشد من المعتاد\n\n"
+    text += "🔸 <b>فوائد الميزة:</b>\n"
+    text += "   • تقليل السبام من الحسابات المزيفة الجديدة\n"
+    text += "   • إعطاء فرصة للأعضاء الجدد الحقيقيين للتعرف على القوانين\n"
+    text += "   • حماية المجموعة من هجمات البوتات الجماعية\n\n"
+    text += f"<b>المدة الحالية:</b> {membership_days} يوم\n"
+    text += f"<b>السياسة الحالية:</b> {'مراقبة صارمة (عقوبة مضاعفة)' if membership_action == 'strict' else 'مراقبة عادية'}\n\n"
+    text += "اختر الإعداد الذي تريد تعديله:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑️ مسح الإحصائيات", callback_data=f"clear_stats_{group_id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
+        [InlineKeyboardButton(text="⏱️ تغيير مدة الحماية", callback_data=f"change_membership_days_{group_id}")],
+        [InlineKeyboardButton(text=f"{'🔄 تخفيف' if membership_action == 'strict' else '🔒 تشديد'} السياسة", callback_data=f"toggle_membership_action_{group_id}")],
+        [InlineKeyboardButton(text="ℹ️ شرح تفصيلي", callback_data=f"membership_explain_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"members_menu_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+def get_exemption_settings_menu(group_id):
+    group_str = str(group_id)
+    exempted_days = settings[group_str]['exempted_days']
+    
+    text = "👑 <b>إعدادات استثناء الأعضاء</b>\n\n"
+    text += "📖 <i>هذه الميزة تستثني الأعضاء القدامى من بعض العقوبات:</i>\n\n"
+    text += "🔸 <b>كيف تعمل:</b>\n"
+    text += "   1. تحدد عدد الأيام (مثال: 30 يومًا)\n"
+    text += "   2. أي عضو انضم قبل هذه الفترة يعتبر 'عضوًا قديمًا'\n"
+    text += "   3. الأعضاء القدامى قد يحصلون على معاملة خاصة\n"
+    text += "   4. يمكن أيضًا إضافة أعضاء محددين يدويًا للاستثناء\n\n"
+    text += "🔸 <b>فوائد الميزة:</b>\n"
+    text += "   • مكافأة الأعضاء المخلصين القدامى\n"
+    text += "   • تقليل المراقبة على الأعضاء الموثوق بهم\n"
+    text += "   • التركيز على مراقبة الحسابات المشبوهة الجديدة\n\n"
+    text += f"<b>الأيام الحالية:</b> {exempted_days} يوم\n"
+    text += "<i>ملاحظة: 0 يوم يعني تعطيل خاصية الاستثناء التلقائي</i>\n\n"
+    text += "اختر الإعداد الذي تريد تعديله:"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏱️ تغيير أيام الاستثناء", callback_data=f"change_exempted_days_{group_id}")],
+        [InlineKeyboardButton(text="👤 إضافة مستثنى يدويًا", callback_data=f"add_exempted_user_{group_id}")],
+        [InlineKeyboardButton(text="🗑️ حذف مستثنى يدوي", callback_data=f"remove_exempted_user_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"members_menu_{group_id}")]
     ])
     
     return text, keyboard
@@ -522,10 +682,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
     data = callback.data
     await callback.answer()
 
-    if data == "main_menu":
-        await start_command(callback.message)
-        return
-        
+    # الأزرار العامة
     if data == "more_info":
         more_info_text = (
             "🛡️ <b>الحارس الأمني المتقدم – مميزات إضافية</b>\n\n"
@@ -533,8 +690,8 @@ async def handle_callback_query(callback: types.CallbackQuery):
             "✅ نظام كلمات مفتاحية ممنوعة مع عقوبات قابلة للتخصيص\n"
             "✅ كشف الروابط الممنوعة (Google, X, Facebook, إلخ)\n"
             "✅ حظر دول معينة من الانضمام مع كشف تلقائي\n"
-            "✅ حماية الأعضاء الجدد (دقيقة، ساعة، يوم، أسبوع)\n"
-            "✅ استثناء أعضاء محددين من العقوبات\n"
+            "✅ حماية الأعضاء الجدد (1-365 يوم) مع مراقبة صارمة\n"
+            "✅ استثناء أعضاء محددين أو بناءً على مدة الانضمام\n"
             "✅ إحصائيات تفصيلية عن المخالفات\n"
             "✅ رسائل إشعار احترافية مع أزرار تفاعلية\n"
             "✅ واجهة تحكم متكاملة وسهلة الاستخدام\n\n"
@@ -547,7 +704,7 @@ async def handle_callback_query(callback: types.CallbackQuery):
         await callback.message.edit_text(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
         return
 
-    # الأقسام الرئيسية
+    # الأزرار الرئيسية
     if data.startswith("manage_"):
         group_id = int(data.split("_")[1])
         text, keyboard = get_main_control_panel(group_id)
@@ -566,176 +723,264 @@ async def handle_callback_query(callback: types.CallbackQuery):
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
+    # إعدادات الحماية
     if data.startswith("protection_menu_"):
         group_id = int(data.split("_")[2])
         text, keyboard = get_protection_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
+    if data.startswith("mode_menu_"):
+        group_id = int(data.split("_")[2])
+        text, keyboard = get_mode_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    if data.startswith("duration_menu_"):
+        group_id = int(data.split("_")[2])
+        text, keyboard = get_duration_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    if data.startswith("night_menu_"):
+        group_id = int(data.split("_")[2])
+        text, keyboard = get_night_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    # الكلمات الممنوعة
     if data.startswith("keywords_menu_"):
         group_id = int(data.split("_")[2])
         text, keyboard = get_keywords_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
+    # الروابط الممنوعة
     if data.startswith("links_menu_"):
         group_id = int(data.split("_")[2])
         text, keyboard = get_links_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
+    # الدول المحظورة
     if data.startswith("countries_menu_"):
         group_id = int(data.split("_")[2])
         text, keyboard = get_countries_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
+    # إدارة الأعضاء
     if data.startswith("members_menu_"):
         group_id = int(data.split("_")[2])
         text, keyboard = get_members_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
-    if data.startswith("stats_"):
-        group_id = int(data.split("_")[1])
-        text, keyboard = get_stats_panel(group_id)
+    if data.startswith("membership_settings_"):
+        group_id = int(data.split("_")[2])
+        text, keyboard = get_membership_settings_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
-    # إدارة الكلمات الممنوعة
-    if data.startswith("add_keyword_"):
+    if data.startswith("exemption_settings_"):
         group_id = int(data.split("_")[2])
-        await callback.message.answer(
-            "📝 <b>أرسل الكلمة أو العبارة الممنوعة:</b>\n\n"
-            "<i>يمكن أن تكون كلمة، عبارة، أو حتى رابط كامل</i>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"keywords_menu_{group_id}")]
-            ])
-        )
-        # هنا يمكن إضافة حالة انتظار للإدخال
+        text, keyboard = get_exemption_settings_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
-    if data.startswith("keyword_action_"):
+    # تغيير وضع الحماية
+    if data.startswith("mode_"):
+        parts = data.split("_")
+        if len(parts) >= 3:
+            mode_name = parts[1]
+            if mode_name == "mute":
+                mode = "mute"
+            elif mode_name == "ban":
+                mode = "ban"
+            elif mode_name == "mute_then_ban":
+                mode = "mute_then_ban"
+            elif mode_name == "delete_only":
+                mode = "delete_only"
+            elif mode_name == "warn_then_mute":
+                mode = "warn_then_mute"
+            elif mode_name == "warn_then_ban":
+                mode = "warn_then_ban"
+            else:
+                mode = "ban"
+            
+            group_id = int(parts[-1])
+            group_str = str(group_id)
+            
+            settings[group_str]['mode'] = mode
+            await save_settings_to_tg()
+            
+            await callback.answer(f"✅ تم تعيين وضع الحماية إلى: {mode_to_text(mode)}", show_alert=True)
+            text, keyboard = get_mode_menu(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    # تغيير مدة العقوبة
+    if data.startswith("set_duration_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            seconds = int(parts[2])
+            group_id = int(parts[3])
+            group_str = str(group_id)
+            
+            settings[group_str]['mute_duration'] = seconds
+            await save_settings_to_tg()
+            
+            dur_value, dur_unit = seconds_to_value_unit(seconds)
+            await callback.answer(f"✅ تم تعيين مدة العقوبة إلى: {dur_value} {unit_to_text_dict.get(dur_unit, dur_unit)}", show_alert=True)
+            text, keyboard = get_duration_menu(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    # الوضع الليلي
+    if data.startswith("night_toggle_"):
         group_id = int(data.split("_")[2])
         group_str = str(group_id)
+        settings[group_str]['night_mode_enabled'] = not settings[group_str]['night_mode_enabled']
+        await save_settings_to_tg()
         
-        text = "⚖️ <b>اختر عقوبة الكلمات الممنوعة:</b>\n\n"
-        text += f"العقوبة الحالية: {mode_to_text(settings[group_str]['keyword_action'])}\n\n"
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑️ حذف الرسالة فقط", callback_data=f"set_keyword_action_delete_{group_id}")],
-            [InlineKeyboardButton(text="🔇 كتم", callback_data=f"set_keyword_action_mute_{group_id}")],
-            [InlineKeyboardButton(text="🚫 حظر", callback_data=f"set_keyword_action_ban_{group_id}")],
-            [InlineKeyboardButton(text="⚠️ تحذير", callback_data=f"set_keyword_action_warn_{group_id}")],
-            [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"keywords_menu_{group_id}")]
-        ])
-        
+        status = "مفعل" if settings[group_str]['night_mode_enabled'] else "معطل"
+        await callback.answer(f"✅ تم {status} الوضع الليلي", show_alert=True)
+        text, keyboard = get_night_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
-    # إدارة الروابط
-    if data.startswith("link_action_"):
-        group_id = int(data.split("_")[2])
-        group_str = str(group_id)
-        
-        text = "⚖️ <b>اختر عقوبة الروابط الممنوعة:</b>\n\n"
-        text += f"العقوبة الحالية: {'حذف الرسالة فقط' if settings[group_str]['link_action'] == 'delete' else mode_to_text(settings[group_str]['link_action'])}\n\n"
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑️ حذف الرسالة فقط", callback_data=f"set_link_action_delete_{group_id}")],
-            [InlineKeyboardButton(text="🔇 كتم", callback_data=f"set_link_action_mute_{group_id}")],
-            [InlineKeyboardButton(text="🚫 حظر", callback_data=f"set_link_action_ban_{group_id}")],
-            [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"links_menu_{group_id}")]
-        ])
-        
-        await callback.message.edit_text(text, reply_markup=keyboard)
-        return
-    
-    # إدارة الدول
+    # الدول المحظورة
     if data.startswith("toggle_country_detect_"):
         group_id = int(data.split("_")[3])
         group_str = str(group_id)
         settings[group_str]['country_detection_enabled'] = not settings[group_str]['country_detection_enabled']
         await save_settings_to_tg()
         
+        status = "تفعيل" if settings[group_str]['country_detection_enabled'] else "تعطيل"
+        await callback.answer(f"✅ تم {status} كشف الدولة", show_alert=True)
         text, keyboard = get_countries_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
-    if data.startswith("country_action_"):
-        group_id = int(data.split("_")[2])
+    if data.startswith("add_country_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            country_code = parts[2]
+            group_id = int(parts[3])
+            group_str = str(group_id)
+            
+            # تحويل رمز الدولة إلى اسم
+            country_names = {
+                "SA": "السعودية", "AE": "الإمارات", "QA": "قطر", "KW": "الكويت", "BH": "البحرين",
+                "OM": "عمان", "US": "الولايات المتحدة", "GB": "المملكة المتحدة", "IN": "الهند",
+                "PK": "بااكستان", "EG": "مصر", "JO": "الأردن", "LB": "لبنان", "SY": "سوريا",
+                "IQ": "العراق", "YE": "اليمن", "DZ": "الجزائر", "MA": "المغرب", "TN": "تونس",
+                "LY": "ليبيا", "SD": "السودان", "SO": "الصومال", "IR": "إيران", "TR": "تركيا",
+                "RU": "روسيا", "CN": "الصين", "JP": "اليابان", "KR": "كوريا الجنوبية",
+                "BR": "البرازيل", "FR": "فرنسا", "DE": "ألمانيا", "IT": "إيطاليا", "ES": "إسبانيا"
+            }
+            
+            country_name = country_names.get(country_code, country_code)
+            
+            if country_name not in settings[group_str]['banned_countries']:
+                settings[group_str]['banned_countries'].append(country_name)
+                await save_settings_to_tg()
+                await callback.answer(f"✅ تم حظر: {country_name}", show_alert=True)
+            else:
+                await callback.answer(f"⚠️ {country_name} محظورة بالفعل", show_alert=True)
+            
+            text, keyboard = get_countries_menu(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    if data.startswith("remove_country_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            country_code = parts[2]
+            group_id = int(parts[3])
+            group_str = str(group_id)
+            
+            # تحويل رمز الدولة إلى اسم
+            country_names = {
+                "SA": "السعودية", "AE": "الإمارات", "QA": "قطر", "KW": "الكويت", "BH": "البحرين",
+                "OM": "عمان", "US": "الولايات المتحدة", "GB": "المملكة المتحدة", "IN": "الهند",
+                "PK": "بااكستان", "EG": "مصر", "JO": "الأردن", "LB": "لبنان", "SY": "سوريا",
+                "IQ": "العراق", "YE": "اليمن", "DZ": "الجزائر", "MA": "المغرب", "TN": "تونس",
+                "LY": "ليبيا", "SD": "السودان", "SO": "الصومال", "IR": "إيران", "TR": "تركيا",
+                "RU": "روسيا", "CN": "الصين", "JP": "اليابان", "KR": "كوريا الجنوبية",
+                "BR": "البرازيل", "FR": "فرنسا", "DE": "ألمانيا", "IT": "إيطاليا", "ES": "إسبانيا"
+            }
+            
+            country_name = country_names.get(country_code, country_code)
+            
+            if country_name in settings[group_str]['banned_countries']:
+                settings[group_str]['banned_countries'].remove(country_name)
+                await save_settings_to_tg()
+                await callback.answer(f"✅ تم إلغاء حظر: {country_name}", show_alert=True)
+            else:
+                await callback.answer(f"⚠️ {country_name} غير محظورة", show_alert=True)
+            
+            text, keyboard = get_countries_menu(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+    
+    # إدارة الأعضاء الجدد
+    if data.startswith("change_membership_days_"):
+        group_id = int(data.split("_")[3])
+        await callback.message.answer(
+            f"🛡️ <b>تغيير مدة حماية الأعضاء الجدد</b>\n\n"
+            f"أرسل عدد الأيام (من 1 إلى 365):\n"
+            f"<i>الأعضاء الذين انضموا خلال هذه الفترة يعتبرون 'جدد'</i>\n\n"
+            f"<b>مثال:</b>\n"
+            f"• 7 = أسبوع واحد\n"
+            f"• 30 = شهر واحد\n"
+            f"• 90 = ثلاثة أشهر\n"
+            f"• 365 = سنة كاملة",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"membership_settings_{group_id}")]
+            ])
+        )
+        # هنا يمكنك إضافة حالة انتظار للإدخال
+        return
+    
+    if data.startswith("toggle_membership_action_"):
+        group_id = int(data.split("_")[3])
         group_str = str(group_id)
         
-        text = "⚖️ <b>اختر عقوبة الدول المحظورة:</b>\n\n"
-        text += f"العقوبة الحالية: {mode_to_text(settings[group_str]['country_action'])}\n\n"
+        # تبديل بين وضعين: strict و normal
+        current = settings[group_str]['membership_action']
+        new_action = 'normal' if current == 'strict' else 'strict'
+        settings[group_str]['membership_action'] = new_action
+        await save_settings_to_tg()
         
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔇 كتم", callback_data=f"set_country_action_mute_{group_id}")],
-            [InlineKeyboardButton(text="🚫 حظر", callback_data=f"set_country_action_ban_{group_id}")],
-            [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"countries_menu_{group_id}")]
-        ])
+        action_text = "مراقبة صارمة (عقوبة مضاعفة)" if new_action == 'strict' else "مراقبة عادية"
+        await callback.answer(f"✅ تم تعيين سياسة حماية الجدد إلى: {action_text}", show_alert=True)
         
+        text, keyboard = get_membership_settings_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
     
-    # إدارة الأعضاء
-    if data.startswith("membership_protection_"):
-        group_id = int(data.split("_")[2])
+    # استثناء الأعضاء
+    if data.startswith("change_exempted_days_"):
+        group_id = int(data.split("_")[3])
         await callback.message.answer(
-            "🛡️ <b>إعداد حماية الأعضاء الجدد</b>\n\n"
-            "أرسل مدة الحماية بالتنسيق التالي:\n"
-            "<code>عدد الوحدة</code>\n\n"
-            "<b>مثال:</b>\n"
-            "<code>1 ساعة</code> - لحماية ساعة واحدة\n"
-            "<code>7 أيام</code> - لحماية أسبوع\n"
-            "<code>30 دقيقة</code> - لحماية نصف ساعة\n\n"
-            "الوحدات المتاحة: دقيقة، ساعة، يوم، أسبوع، شهر، سنة",
+            f"👑 <b>تغيير أيام استثناء الأعضاء</b>\n\n"
+            f"أرسل عدد الأيام (من 0 إلى 365):\n"
+            f"<i>الأعضاء الذين انضموا قبل هذه الفترة يعتبرون 'قدامى' ويتم استثناؤهم</i>\n\n"
+            f"<b>مثال:</b>\n"
+            f"• 0 = تعطيل خاصية الاستثناء التلقائي\n"
+            f"• 30 = شهر واحد\n"
+            f"• 90 = ثلاثة أشهر\n"
+            f"• 180 = ستة أشهر\n"
+            f"• 365 = سنة كاملة",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"members_menu_{group_id}")]
+                [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"exemption_settings_{group_id}")]
             ])
         )
         return
     
-    if data.startswith("clear_stats_"):
-        group_id = int(data.split("_")[2])
-        group_str = str(group_id)
-        settings[group_str]['violations'] = {}
-        settings[group_str]['warnings'] = {}
-        await save_settings_to_tg()
-        
-        await callback.answer("✅ تم مسح الإحصائيات", show_alert=True)
-        text, keyboard = get_stats_panel(group_id)
-        await callback.message.edit_text(text, reply_markup=keyboard)
-        return
-    
-    # تعيين الإجراءات
-    if data.startswith("set_"):
-        parts = data.split("_")
-        action_type = parts[1]  # keyword, link, country
-        action = parts[3]
-        group_id = int(parts[4])
-        group_str = str(group_id)
-        
-        if action_type == "keyword":
-            settings[group_str]['keyword_action'] = action
-        elif action_type == "link":
-            settings[group_str]['link_action'] = action
-        elif action_type == "country":
-            settings[group_str]['country_action'] = action
-        
-        await save_settings_to_tg()
-        await callback.answer(f"✅ تم تعيين العقوبة: {action}", show_alert=True)
-        
-        # العودة للقائمة المناسبة
-        if action_type == "keyword":
-            text, keyboard = get_keywords_menu(group_id)
-        elif action_type == "link":
-            text, keyboard = get_links_menu(group_id)
-        elif action_type == "country":
-            text, keyboard = get_countries_menu(group_id)
-        
-        await callback.message.edit_text(text, reply_markup=keyboard)
-        return
+    # إذا لم يتطابق أي زر، نعرض رسالة
+    await callback.answer("⚠️ هذا الزر قيد التطوير", show_alert=True)
 
 # ================== handler الرسائل للتحكم ==================
 @dp.message(Command(commands=["addkeyword"]))
@@ -846,17 +1091,38 @@ async def check_message(message: types.Message):
     group_str = str(chat_id)
     full_name = message.from_user.full_name
 
-    # التحقق من الأعضاء المستثنين
+    # التحقق إذا كان العضو إداريًا
+    if await is_admin(chat_id, user_id):
+        return
+
+    # التحقق من الاستثناء بالأيام
+    if settings[group_str]['exempted_days'] > 0:
+        join_date = await get_user_join_date(chat_id, user_id)
+        if join_date:
+            days_in_group = (datetime.now() - join_date).days
+            if days_in_group >= settings[group_str]['exempted_days']:
+                return  # العضو قديم ويتم استثناؤه
+
+    # التحقق من الاستثناء اليدوي
     if user_id in settings[group_str]['exempted_users']:
         return
 
+    # التحقق من حماية الأعضاء الجدد
+    if settings[group_str]['membership_days'] > 0:
+        join_date = await get_user_join_date(chat_id, user_id)
+        if join_date:
+            days_in_group = (datetime.now() - join_date).days
+            if days_in_group < settings[group_str]['membership_days']:
+                # العضو جديد، تطبيق سياسة المراقبة المشددة
+                await handle_new_member_violation(chat_id, user_id, "عضو جديد تحت المراقبة", group_str, full_name)
+    
     # التحقق من الوضع الليلي
     if settings[group_str]['night_mode_enabled']:
         start = datetime.strptime(settings[group_str]['night_start'], '%H:%M').time()
         end = datetime.strptime(settings[group_str]['night_end'], '%H:%M').time()
         now = datetime.now().time()
         is_night = (start <= now < end) if start < end else (start <= now or now < end)
-        if is_night and not await is_admin(chat_id, user_id):
+        if is_night:
             await message.delete()
             notify = (
                 f"🌙 <b>الوضع الليلي مفعل</b>\n\n"
@@ -870,12 +1136,9 @@ async def check_message(message: types.Message):
 
     # التحقق من حظر الدول
     if settings[group_str]['country_detection_enabled'] and settings[group_str]['banned_countries']:
-        country = await get_user_country(user_id)
-        if country and country in settings[group_str]['banned_countries']:
-            action = settings[group_str]['country_action']
-            await handle_violation(chat_id, user_id, f"الدولة المحظورة: {country}", action, group_str, full_name)
-            await message.delete()
-            return
+        # هنا يمكن إضافة كود لكشف الدولة
+        # حالياً نستخدم طريقة مبسطة
+        pass
 
     # التحقق من الرسالة
     text = (message.text or message.caption or "").strip()
@@ -890,6 +1153,25 @@ async def check_message(message: types.Message):
         await handle_violation(chat_id, user_id, "نشر محتوى ممنوع", mode, group_str, full_name)
         await message.delete()
 
+async def handle_new_member_violation(chat_id: int, user_id: int, reason: str, group_str: str, full_name: str):
+    """معالجة مخالفات الأعضاء الجدد"""
+    membership_action = settings[group_str]['membership_action']
+    
+    if membership_action == 'strict':
+        # عقوبة مضاعفة للأعضاء الجدد
+        notify = (
+            f"🔴 <b>عضو جديد تحت المراقبة</b>\n\n"
+            f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
+            f"📛 <b>السبب:</b> {reason}\n"
+            f"🆕 <b>الحالة:</b> عضو جديد تحت المراقبة الصارمة\n"
+            f"⚠️ <b>تحذير:</b> أي مخالفة قد تؤدي لعقوبة مضاعفة\n\n"
+            f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
+        )
+        msg = await bot.send_message(chat_id, notify)
+        asyncio.create_task(delete_after_delay(msg, 120))
+    
+    # يمكن إضافة المزيد من الإجراءات حسب السياسة المحددة
+
 async def handle_violation(chat_id: int, user_id: int, reason: str, action: str, group_str: str, full_name: str):
     """معالجة المخالفات بأنواعها المختلفة"""
     
@@ -900,12 +1182,21 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
     violations_count = settings[group_str]['violations'].get(user_id, 0) + 1
     settings[group_str]['violations'][user_id] = violations_count
     
-    # تحديد العقوبة بناءً على الإعدادات
+    # تحديد إذا كان العضو جديدًا
+    is_new_member = False
+    join_date = await get_user_join_date(chat_id, user_id)
+    if join_date and settings[group_str]['membership_days'] > 0:
+        days_in_group = (datetime.now() - join_date).days
+        if days_in_group < settings[group_str]['membership_days']:
+            is_new_member = True
+    
+    # تطبيق العقوبة مع مراعاة إذا كان العضو جديدًا
     if action == 'delete_only':
         notify = (
             f"🗑️ <b>تم حذف رسالة مخالفة</b>\n\n"
             f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
             f"📛 <b>السبب:</b> {reason}\n"
+            f"{'🆕 <b>الحالة:</b> عضو جديد تحت المراقبة\n' if is_new_member else ''}"
             f"🔢 <b>عدد المخالفات:</b> {violations_count}\n\n"
             f"<i>العقوبة: حذف الرسالة فقط</i>"
         )
@@ -919,6 +1210,7 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
                 f"🚫 <b>تم حظر العضو نهائيًا</b>\n\n"
                 f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
                 f"📛 <b>السبب:</b> {reason}\n"
+                f"{'🆕 <b>الحالة:</b> كان عضوًا جديدًا تحت المراقبة\n' if is_new_member else ''}"
                 f"🔢 <b>عدد المخالفات:</b> {violations_count}\n\n"
                 f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
             )
@@ -927,6 +1219,10 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
     
     elif action == 'mute':
         mute_duration = settings[group_str]['mute_duration']
+        # مضاعفة المدة إذا كان العضو جديدًا
+        if is_new_member and settings[group_str]['membership_action'] == 'strict':
+            mute_duration *= 2
+        
         until_date = int(time.time()) + mute_duration
         await bot.restrict_chat_member(
             chat_id, user_id, 
@@ -938,6 +1234,7 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
             f"🔇 <b>تم كتم العضو</b>\n\n"
             f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
             f"📛 <b>السبب:</b> {reason}\n"
+            f"{'🆕 <b>الحالة:</b> عضو جديد - عقوبة مضاعفة\n' if is_new_member and settings[group_str]['membership_action'] == 'strict' else ''}"
             f"⏰ <b>المدة:</b> {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
             f"🔢 <b>عدد المخالفات:</b> {violations_count}\n\n"
             f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
@@ -949,6 +1246,10 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
         mute_duration = settings[group_str]['mute_duration']
         
         if violations_count == 1:
+            # مضاعفة المدة إذا كان العضو جديدًا
+            if is_new_member and settings[group_str]['membership_action'] == 'strict':
+                mute_duration *= 2
+            
             until_date = int(time.time()) + mute_duration
             await bot.restrict_chat_member(
                 chat_id, user_id, 
@@ -960,6 +1261,7 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
                 f"🔇 <b>تم كتم العضو (مخالفة أولى)</b>\n\n"
                 f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
                 f"📛 <b>السبب:</b> {reason}\n"
+                f"{'🆕 <b>الحالة:</b> عضو جديد - عقوبة مضاعفة\n' if is_new_member and settings[group_str]['membership_action'] == 'strict' else ''}"
                 f"⏰ <b>المدة:</b> {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
                 f"⚠️ <b>تحذير:</b> المخالفة الثانية = حظر دائم\n\n"
                 f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
@@ -973,13 +1275,14 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
                     f"🚫 <b>تم حظر العضو نهائيًا (مخالفة ثانية)</b>\n\n"
                     f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
                     f"📛 <b>السبب:</b> {reason}\n"
+                    f"{'🆕 <b>الحالة:</b> كان عضوًا جديدًا تحت المراقبة\n' if is_new_member else ''}"
                     f"🔢 <b>عدد المخالفات:</b> {violations_count}\n\n"
                     f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
                 )
                 msg = await bot.send_message(chat_id, notify)
                 asyncio.create_task(delete_after_delay(msg, 120))
     
-    elif action == 'warn':
+    elif action == 'warn_then_mute' or action == 'warn_then_ban':
         if 'warnings' not in settings[group_str]:
             settings[group_str]['warnings'] = {}
         
@@ -987,29 +1290,46 @@ async def handle_violation(chat_id: int, user_id: int, reason: str, action: str,
         settings[group_str]['warnings'][user_id] = warnings_count
         
         if warnings_count >= 3:
-            if not await is_banned(chat_id, user_id):
-                await bot.ban_chat_member(chat_id, user_id)
+            if action == 'warn_then_mute':
+                mute_duration = settings[group_str]['mute_duration']
+                # مضاعفة المدة إذا كان العضو جديدًا
+                if is_new_member and settings[group_str]['membership_action'] == 'strict':
+                    mute_duration *= 2
+                
+                until_date = int(time.time()) + mute_duration
+                await bot.restrict_chat_member(
+                    chat_id, user_id, 
+                    permissions=types.ChatPermissions(can_send_messages=False), 
+                    until_date=until_date
+                )
+                duration_value, duration_unit = seconds_to_value_unit(mute_duration)
                 notify = (
-                    f"🚫 <b>تم حظر العضو بعد 3 تحذيرات</b>\n\n"
+                    f"🔇 <b>تم كتم العضو بعد 3 تحذيرات</b>\n\n"
                     f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
                     f"📛 <b>السبب:</b> {reason}\n"
+                    f"{'🆕 <b>الحالة:</b> عضو جديد - عقوبة مضاعفة\n' if is_new_member and settings[group_str]['membership_action'] == 'strict' else ''}"
+                    f"⏰ <b>المدة:</b> {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
                     f"⚠️ <b>عدد التحذيرات:</b> {warnings_count}\n\n"
                     f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
                 )
-            else:
-                notify = (
-                    f"⚠️ <b>تحذير #{warnings_count}</b>\n\n"
-                    f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-                    f"📛 <b>السبب:</b> {reason}\n"
-                    f"⚠️ <b>تحذير:</b> عند الوصول لـ 3 تحذيرات = حظر دائم\n\n"
-                    f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
-                )
+            else:  # warn_then_ban
+                if not await is_banned(chat_id, user_id):
+                    await bot.ban_chat_member(chat_id, user_id)
+                    notify = (
+                        f"🚫 <b>تم حظر العضو بعد 3 تحذيرات</b>\n\n"
+                        f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
+                        f"📛 <b>السبب:</b> {reason}\n"
+                        f"{'🆕 <b>الحالة:</b> كان عضوًا جديدًا تحت المراقبة\n' if is_new_member else ''}"
+                        f"⚠️ <b>عدد التحذيرات:</b> {warnings_count}\n\n"
+                        f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
+                    )
         else:
             notify = (
                 f"⚠️ <b>تحذير #{warnings_count}</b>\n\n"
                 f"👤 <a href='tg://user?id={user_id}'>{full_name}</a>\n"
                 f"📛 <b>السبب:</b> {reason}\n"
-                f"⚠️ <b>تحذير:</b> عند الوصول لـ 3 تحذيرات = حظر دائم\n\n"
+                f"{'🆕 <b>الحالة:</b> عضو جديد تحت المراقبة\n' if is_new_member else ''}"
+                f"⚠️ <b>تحذير:</b> عند الوصول لـ 3 تحذيرات = {'كتم' if action == 'warn_then_mute' else 'حظر'} دائم\n\n"
                 f"🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
             )
         
