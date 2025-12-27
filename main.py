@@ -41,9 +41,10 @@ class Form(StatesGroup):
     waiting_for_membership_days = State()
     waiting_for_exempt_days = State()
     waiting_for_user_id = State()
-    waiting_for_duration = State()
     waiting_for_custom_duration = State()
     waiting_for_notification_time = State()
+    waiting_for_night_start = State()
+    waiting_for_night_end = State()
 
 # ================== الأنماط الأساسية ==================
 def normalize_digits(text: str) -> str:
@@ -64,7 +65,7 @@ ALLOWED_DOMAINS = ["youtube.com", "youtu.be", "instagram.com", "instagr.am", "x.
 
 # ================== إعدادات البوت الموسعة ==================
 settings = {}
-temp_data = {}  # تخزين مؤقت للبيانات
+temp_data = {}
 
 # وحدات الوقت
 unit_seconds = {
@@ -123,7 +124,6 @@ async def is_banned(chat_id: int, user_id: int) -> bool:
         return True
 
 async def get_user_join_date(chat_id: int, user_id: int):
-    """الحصول على تاريخ انضمام العضو"""
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         if member.joined_date:
@@ -133,20 +133,17 @@ async def get_user_join_date(chat_id: int, user_id: int):
     return None
 
 def contains_spam(text: str, group_str: str) -> bool:
-    """الكشف عن السبام مع مراعاة الكلمات المفتاحية"""
     if not text:
         return False
 
     normalized = normalize_digits(text)
     
-    # الكشف عن الأنماط الأساسية
     if PHONE_PATTERN.search(normalized) or PHONE_CONTEXT_PATTERN.search(normalized):
         return True
 
     if any(pattern.search(text) for pattern in [WHATSAPP_INVITE_PATTERN, TELEGRAM_INVITE_PATTERN, TIKTOK_PATTERN, SHORT_LINK_PATTERN]):
         return True
 
-    # الكشف عن الكلمات المفتاحية الممنوعة
     if group_str in settings and 'banned_keywords' in settings[group_str]:
         keywords = settings[group_str]['banned_keywords']
         text_lower = text.lower()
@@ -154,12 +151,10 @@ def contains_spam(text: str, group_str: str) -> bool:
             if keyword.lower() in text_lower:
                 return True
 
-    # الكشف عن الروابط الممنوعة
     urls = re.findall(r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.[^\s]{2,}', text, re.IGNORECASE)
     for url in urls:
         clean_url = url.replace(' ', '').lower()
         if not any(domain in clean_url for domain in ALLOWED_DOMAINS):
-            # التحقق من الروابط الممنوعة في الإعدادات
             if group_str in settings and 'banned_links' in settings[group_str]:
                 banned_links = settings[group_str]['banned_links']
                 for banned_link in banned_links:
@@ -202,12 +197,11 @@ async def load_settings_from_tg():
             'exempted_users': [],
             'warnings': {},
             'last_update': time.time(),
-            'notification_duration': 120,  # مدة بقاء الإشعار بالثواني (افتراضي 120 ثانية = دقيقتين)
-            'keep_notification': False  # هل يبقى الإشعار للأبد؟
+            'notification_duration': 120,
+            'keep_notification': False
         }
 
     try:
-        # محاولة تحميل الإعدادات من الرسائل
         messages = []
         try:
             async for message in bot.get_chat_messages(DB_CHAT_ID, limit=50):
@@ -231,7 +225,6 @@ async def load_settings_from_tg():
             loaded = json.loads(json_msg.text)
             for group_str in settings:
                 if group_str in loaded:
-                    # تحديث الإعدادات مع الحفاظ على القيم الافتراضية
                     for key in settings[group_str]:
                         if key in loaded[group_str]:
                             settings[group_str][key] = loaded[group_str][key]
@@ -305,7 +298,7 @@ async def night_mode_checker():
         
         await asyncio.sleep(60)
 
-# ================== لوحات التحكم المحسنة ==================
+# ================== لوحات التحكم ==================
 def get_main_control_panel(group_id):
     group_str = str(group_id)
     current_mode = settings[group_str]['mode']
@@ -371,10 +364,10 @@ def get_mode_menu(group_id):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"✅ 🔇 كتم أولى" if current_mode == 'mute' else "🔇 كتم أولى", callback_data=f"setmode_mute_{group_id}")],
         [InlineKeyboardButton(text=f"✅ 🚫 حظر فوري" if current_mode == 'ban' else "🚫 حظر فوري", callback_data=f"setmode_ban_{group_id}")],
-        [InlineKeyboardButton(text=f"✅ 🔇⏱️ كتم ثم حظر" if current_mode == 'mute_then_ban' else "🔇⏱️ كتم ثم حظر", callback_data=f"setmode_mute_then_ban_{group_id}")],
-        [InlineKeyboardButton(text=f"✅ 🗑️ حذف فقط" if current_mode == 'delete_only' else "🗑️ حذف فقط", callback_data=f"setmode_delete_only_{group_id}")],
-        [InlineKeyboardButton(text=f"✅ ⚠️🔇 تحذير ثم كتم" if current_mode == 'warn_then_mute' else "⚠️🔇 تحذير ثم كتم", callback_data=f"setmode_warn_then_mute_{group_id}")],
-        [InlineKeyboardButton(text=f"✅ ⚠️🚫 تحذير ثم حظر" if current_mode == 'warn_then_ban' else "⚠️🚫 تحذير ثم حظر", callback_data=f"setmode_warn_then_ban_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ 🔇⏱️ كتم ثم حظر" if current_mode == 'mute_then_ban' else "🔇⏱️ كتم ثم حظر", callback_data=f"setmode_mutethenban_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ 🗑️ حذف فقط" if current_mode == 'delete_only' else "🗑️ حذف فقط", callback_data=f"setmode_deleteonly_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ ⚠️🔇 تحذير ثم كتم" if current_mode == 'warn_then_mute' else "⚠️🔇 تحذير ثم كتم", callback_data=f"setmode_warnthenmute_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ ⚠️🚫 تحذير ثم حظر" if current_mode == 'warn_then_ban' else "⚠️🚫 تحذير ثم حظر", callback_data=f"setmode_warnthenban_{group_id}")],
         [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_{group_id}")]
     ])
     
@@ -446,9 +439,6 @@ def get_notifications_menu(group_id):
         
         text += f"<b>مدة الإشعار:</b> {duration_text}\n\n"
     
-    text += "<b>ملاحظة:</b>\n"
-    text += "• عند تفعيل 'بقاء للأبد' لن يتم حذف الإشعارات تلقائياً\n"
-    text += "• عند تعطيله، سيتم حذف الإشعارات بعد المدة المحددة\n\n"
     text += "اختر الإعداد الذي تريد تعديله:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -471,12 +461,6 @@ def get_keywords_menu(group_id):
         text += "<b>آخر 5 كلمات:</b>\n"
         for i, word in enumerate(keywords[-5:], 1):
             text += f"{i}. <code>{word[:30]}</code>\n"
-        if len(keywords) > 5:
-            text += f"و <b>{len(keywords)-5}</b> كلمة أخرى...\n"
-    else:
-        text += "⚠️ لا توجد كلمات ممنوعة\n\n"
-    
-    text += "<i>يمكنك إضافة كلمات أو روابط كاملة</i>"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ إضافة كلمة جديدة", callback_data=f"addkw_{group_id}")],
@@ -499,10 +483,6 @@ def get_links_menu(group_id):
         text += "<b>آخر 5 روابط:</b>\n"
         for i, link in enumerate(links[-5:], 1):
             text += f"{i}. <code>{link[:30]}</code>\n"
-        if len(links) > 5:
-            text += f"و <b>{len(links)-5}</b> رابط آخر...\n"
-    else:
-        text += "⚠️ لا توجد روابط ممنوعة\n\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ إضافة رابط جديد", callback_data=f"addlink_{group_id}")],
@@ -526,8 +506,6 @@ def get_countries_menu(group_id):
         text += "<b>الدول المحظورة:</b>\n"
         for i, country in enumerate(countries[:10], 1):
             text += f"{i}. {country}\n"
-        if len(countries) > 10:
-            text += f"و <b>{len(countries)-10}</b> دولة أخرى...\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ إضافة دولة", callback_data=f"addcountry_{group_id}")],
@@ -547,9 +525,6 @@ def get_members_menu(group_id):
     text += f"<b>حماية الأعضاء الجدد:</b> {settings[group_str]['membership_days']} يوم\n"
     text += f"<b>أيام الاستثناء:</b> {settings[group_str]['exempted_days']} يوم\n"
     text += f"<b>أعضاء مستثنون يدويًا:</b> {len(settings[group_str]['exempted_users'])} عضو\n\n"
-    
-    text += "<i>حماية الجدد: مراقبة صارمة للأعضاء الجدد</i>\n"
-    text += "<i>الاستثناء: إعفاء الأعضاء القدامى من العقوبات</i>"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛡️ حماية الأعضاء الجدد", callback_data=f"membership_{group_id}")],
@@ -583,18 +558,12 @@ async def start_command(message: types.Message):
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(text=f"⚙️ {title[:20]}", callback_data=f"manage_{gid}")
             ])
-        keyboard.inline_keyboard.append([
-            InlineKeyboardButton(text="❓ مساعدة", url="https://t.me/ql_om")
-        ])
         await message.answer(intro_text, reply_markup=keyboard)
     else:
         intro_text = "🛡️ <b>مرحباً بالحارس الأمني!</b>\n\nالبوت يعمل في المجموعات المسجلة فقط."
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📞 تواصل للتسجيل", url="https://t.me/ql_om")]
-        ])
-        await message.answer(intro_text, reply_markup=keyboard)
+        await message.answer(intro_text)
 
-# ================== handler الـ callback المحسن ==================
+# ================== handler الـ callback مع إصلاح كامل ==================
 @dp.callback_query()
 async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
@@ -606,7 +575,7 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
         
         await callback.answer()
         
-        # الأزرار الرئيسية
+        # === الأزرار الرئيسية ===
         if data.startswith("manage_"):
             group_id = int(data.split("_")[1])
             await show_main_panel(callback, group_id)
@@ -619,7 +588,7 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             group_id = int(data.split("_")[1])
             await show_main_panel(callback, group_id)
         
-        # إعدادات الحماية
+        # === إعدادات الحماية ===
         elif data.startswith("protection_"):
             group_id = int(data.split("_")[1])
             text, keyboard = get_protection_menu(group_id)
@@ -630,28 +599,29 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             text, keyboard = get_mode_menu(group_id)
             await safe_edit_message(callback, text, keyboard)
         
+        # === إصلاح كامل لأزرار وضع الحماية ===
         elif data.startswith("setmode_"):
             parts = data.split("_")
             if len(parts) >= 3:
-                mode_name = parts[1]
+                mode_type = parts[1]  # mute, ban, mutethenban, deleteonly, warnthenmute, warnthenban
                 group_id = int(parts[2])
                 group_str = str(group_id)
                 
-                # تحديد الوضع المناسب
-                mode_map = {
+                # تعيين الوضع المناسب
+                mode_mapping = {
                     'mute': 'mute',
                     'ban': 'ban',
-                    'mute_then_ban': 'mute_then_ban',
-                    'delete_only': 'delete_only',
-                    'warn_then_mute': 'warn_then_mute',
-                    'warn_then_ban': 'warn_then_ban'
+                    'mutethenban': 'mute_then_ban',
+                    'deleteonly': 'delete_only',
+                    'warnthenmute': 'warn_then_mute',
+                    'warnthenban': 'warn_then_ban'
                 }
                 
-                mode = mode_map.get(mode_name, 'ban')
-                settings[group_str]['mode'] = mode
+                new_mode = mode_mapping.get(mode_type, 'ban')
+                settings[group_str]['mode'] = new_mode
                 await save_settings_to_tg()
                 
-                await callback.answer(f"✅ تم تعيين: {mode_to_text(mode)}")
+                await callback.answer(f"✅ تم تعيين: {mode_to_text(new_mode)}", show_alert=True)
                 text, keyboard = get_mode_menu(group_id)
                 await safe_edit_message(callback, text, keyboard)
         
@@ -714,7 +684,43 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             text, keyboard = get_night_menu(group_id)
             await safe_edit_message(callback, text, keyboard)
         
-        # إدارة الإشعارات
+        elif data.startswith("editstart_"):
+            group_id = int(data.split("_")[1])
+            await state.set_state(Form.waiting_for_night_start)
+            await state.update_data(group_id=group_id)
+            
+            await callback.message.answer(
+                "⏰ <b>تعديل وقت بدء الوضع الليلي</b>\n\n"
+                "أرسل الوقت بالتنسيق 24 ساعة (HH:MM):\n\n"
+                "<b>أمثلة:</b>\n"
+                "• 22:00 = 10 مساءً\n"
+                "• 23:30 = 11:30 مساءً\n"
+                "• 00:00 = 12 منتصف الليل\n\n"
+                "<i>أدخل الوقت الجديد:</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"night_{group_id}")]
+                ])
+            )
+        
+        elif data.startswith("editend_"):
+            group_id = int(data.split("_")[1])
+            await state.set_state(Form.waiting_for_night_end)
+            await state.update_data(group_id=group_id)
+            
+            await callback.message.answer(
+                "⏰ <b>تعديل وقت انتهاء الوضع الليلي</b>\n\n"
+                "أرسل الوقت بالتنسيق 24 ساعة (HH:MM):\n\n"
+                "<b>أمثلة:</b>\n"
+                "• 06:00 = 6 صباحاً\n"
+                "• 07:30 = 7:30 صباحاً\n"
+                "• 08:00 = 8 صباحاً\n\n"
+                "<i>أدخل الوقت الجديد:</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"night_{group_id}")]
+                ])
+            )
+        
+        # === إدارة الإشعارات ===
         elif data.startswith("notifications_"):
             group_id = int(data.split("_")[1])
             text, keyboard = get_notifications_menu(group_id)
@@ -747,13 +753,13 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
                 "• 300 = 5 دقائق\n"
                 "• 600 = 10 دقائق\n"
                 "• 3600 = 1 ساعة\n\n"
-                "<i>أدخل الرقم المناسب (أقل من 86400 ثانية = 24 ساعة):</i>",
+                "<i>أدخل الرقم المناسب:</i>",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"notifications_{group_id}")]
                 ])
             )
         
-        # الكلمات الممنوعة
+        # === الكلمات الممنوعة ===
         elif data.startswith("keywords_"):
             group_id = int(data.split("_")[1])
             text, keyboard = get_keywords_menu(group_id)
@@ -789,7 +795,7 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             ])
             await safe_edit_message(callback, text, keyboard)
         
-        # الروابط الممنوعة
+        # === الروابط الممنوعة ===
         elif data.startswith("links_"):
             group_id = int(data.split("_")[1])
             text, keyboard = get_links_menu(group_id)
@@ -825,7 +831,7 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             ])
             await safe_edit_message(callback, text, keyboard)
         
-        # الدول المحظورة
+        # === الدول المحظورة ===
         elif data.startswith("countries_"):
             group_id = int(data.split("_")[1])
             text, keyboard = get_countries_menu(group_id)
@@ -873,7 +879,7 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             text, keyboard = get_countries_menu(group_id)
             await safe_edit_message(callback, text, keyboard)
         
-        # إدارة الأعضاء
+        # === إدارة الأعضاء ===
         elif data.startswith("members_"):
             group_id = int(data.split("_")[1])
             text, keyboard = get_members_menu(group_id)
@@ -915,6 +921,62 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
                 ])
             )
         
+        elif data.startswith("listexempt_"):
+            group_id = int(data.split("_")[1])
+            group_str = str(group_id)
+            exempted_users = settings[group_str]['exempted_users']
+            
+            if exempted_users:
+                text = "📋 <b>قائمة الأعضاء المستثنين يدويًا:</b>\n\n"
+                for i, user_id in enumerate(exempted_users, 1):
+                    text += f"{i}. <code>{user_id}</code>\n"
+            else:
+                text = "⚠️ لا توجد أعضاء مستثنين يدويًا"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"members_{group_id}")]
+            ])
+            await safe_edit_message(callback, text, keyboard)
+        
+        elif data.startswith("removekw_"):
+            group_id = int(data.split("_")[1])
+            await state.set_state(Form.waiting_for_keyword)
+            await state.update_data(group_id=group_id, action='remove')
+            
+            await callback.message.answer(
+                "🗑️ <b>أرسل الكلمة المراد حذفها:</b>\n\n"
+                "<i>اكتب الكلمة التي تريد حذفها من القائمة</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"keywords_{group_id}")]
+                ])
+            )
+        
+        elif data.startswith("removelink_"):
+            group_id = int(data.split("_")[1])
+            await state.set_state(Form.waiting_for_link)
+            await state.update_data(group_id=group_id, action='remove')
+            
+            await callback.message.answer(
+                "🗑️ <b>أرسل الرابط المراد حذفه:</b>\n\n"
+                "<i>اكتب الرابط الذي تريد حذفه من القائمة</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"links_{group_id}")]
+                ])
+            )
+        
+        elif data.startswith("removecountry_"):
+            group_id = int(data.split("_")[1])
+            await state.set_state(Form.waiting_for_country)
+            await state.update_data(group_id=group_id, action='remove')
+            
+            await callback.message.answer(
+                "🗑️ <b>أرسل الدولة المراد حذفها:</b>\n\n"
+                "<i>اكتب اسم الدولة التي تريد حذفها من القائمة</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"countries_{group_id}")]
+                ])
+            )
+        
         else:
             await callback.answer("⚠️ زر غير معروف")
     
@@ -923,14 +985,11 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
         await callback.answer("❌ حدث خطأ")
 
 async def show_main_panel(callback, group_id):
-    """عرض اللوحة الرئيسية بأمان"""
     text, keyboard = get_main_control_panel(group_id)
     await safe_edit_message(callback, text, keyboard)
 
 async def safe_edit_message(callback, text, keyboard):
-    """تعديل الرسالة بأمان لتجنب الخطأ message is not modified"""
     try:
-        # التحقق إذا كانت الرسالة نفسها
         if callback.message.text != text or callback.message.reply_markup != keyboard:
             await callback.message.edit_text(text, reply_markup=keyboard)
     except Exception as e:
@@ -942,180 +1001,210 @@ async def safe_edit_message(callback, text, keyboard):
 async def handle_all_messages(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     
-    # التحقق من الرسائل الخاصة
     if message.chat.type == 'private':
         current_state = await state.get_state()
+        data = await state.get_data()
+        group_id = data.get('group_id')
+        action = data.get('action', 'add')
         
-        if current_state == Form.waiting_for_keyword.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+        if current_state == Form.waiting_for_keyword.state and group_id:
+            keyword = message.text.strip()
+            group_str = str(group_id)
             
-            if group_id:
-                keyword = message.text.strip()
-                group_str = str(group_id)
-                
+            if action == 'add':
                 if keyword not in settings[group_str]['banned_keywords']:
                     settings[group_str]['banned_keywords'].append(keyword)
                     await save_settings_to_tg()
-                    
                     await message.reply(f"✅ <b>تم إضافة الكلمة:</b> <code>{keyword}</code>")
-                    await state.clear()
-                    
-                    # العودة للقائمة
-                    text, keyboard = get_keywords_menu(group_id)
-                    await message.answer(text, reply_markup=keyboard)
                 else:
                     await message.reply("⚠️ هذه الكلمة موجودة بالفعل")
-        
-        elif current_state == Form.waiting_for_link.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+            else:  # remove
+                if keyword in settings[group_str]['banned_keywords']:
+                    settings[group_str]['banned_keywords'].remove(keyword)
+                    await save_settings_to_tg()
+                    await message.reply(f"✅ <b>تم حذف الكلمة:</b> <code>{keyword}</code>")
+                else:
+                    await message.reply("⚠️ هذه الكلمة غير موجودة في القائمة")
             
-            if group_id:
-                link = message.text.strip()
-                group_str = str(group_id)
-                
+            await state.clear()
+            text, keyboard = get_keywords_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
+        
+        elif current_state == Form.waiting_for_link.state and group_id:
+            link = message.text.strip()
+            group_str = str(group_id)
+            
+            if action == 'add':
                 if link not in settings[group_str]['banned_links']:
                     settings[group_str]['banned_links'].append(link)
                     await save_settings_to_tg()
-                    
                     await message.reply(f"✅ <b>تم إضافة الرابط:</b> <code>{link}</code>")
-                    await state.clear()
-                    
-                    text, keyboard = get_links_menu(group_id)
-                    await message.answer(text, reply_markup=keyboard)
                 else:
                     await message.reply("⚠️ هذا الرابط موجود بالفعل")
-        
-        elif current_state == Form.waiting_for_country.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+            else:  # remove
+                if link in settings[group_str]['banned_links']:
+                    settings[group_str]['banned_links'].remove(link)
+                    await save_settings_to_tg()
+                    await message.reply(f"✅ <b>تم حذف الرابط:</b> <code>{link}</code>")
+                else:
+                    await message.reply("⚠️ هذا الرابط غير موجود في القائمة")
             
-            if group_id:
-                country = message.text.strip()
-                group_str = str(group_id)
-                
+            await state.clear()
+            text, keyboard = get_links_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
+        
+        elif current_state == Form.waiting_for_country.state and group_id:
+            country = message.text.strip()
+            group_str = str(group_id)
+            
+            if action == 'add':
                 if country not in settings[group_str]['banned_countries']:
                     settings[group_str]['banned_countries'].append(country)
                     await save_settings_to_tg()
-                    
                     await message.reply(f"✅ <b>تم إضافة الدولة:</b> {country}")
-                    await state.clear()
-                    
-                    text, keyboard = get_countries_menu(group_id)
-                    await message.answer(text, reply_markup=keyboard)
                 else:
                     await message.reply("⚠️ هذه الدولة موجودة بالفعل")
-        
-        elif current_state == Form.waiting_for_membership_days.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+            else:  # remove
+                if country in settings[group_str]['banned_countries']:
+                    settings[group_str]['banned_countries'].remove(country)
+                    await save_settings_to_tg()
+                    await message.reply(f"✅ <b>تم حذف الدولة:</b> {country}")
+                else:
+                    await message.reply("⚠️ هذه الدولة غير موجودة في القائمة")
             
-            if group_id:
-                try:
-                    days = int(message.text.strip())
-                    if 1 <= days <= 365:
-                        group_str = str(group_id)
-                        settings[group_str]['membership_days'] = days
-                        await save_settings_to_tg()
-                        
-                        await message.reply(f"✅ <b>تم تعيين حماية الجدد:</b> {days} يوم")
-                        await state.clear()
-                        
-                        text, keyboard = get_members_menu(group_id)
-                        await message.answer(text, reply_markup=keyboard)
-                    else:
-                        await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 365")
-                except ValueError:
-                    await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+            await state.clear()
+            text, keyboard = get_countries_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
         
-        elif current_state == Form.waiting_for_exempt_days.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+        elif current_state == Form.waiting_for_membership_days.state and group_id:
+            try:
+                days = int(message.text.strip())
+                if 1 <= days <= 365:
+                    group_str = str(group_id)
+                    settings[group_str]['membership_days'] = days
+                    await save_settings_to_tg()
+                    await message.reply(f"✅ <b>تم تعيين حماية الجدد:</b> {days} يوم")
+                else:
+                    await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 365")
+                    return
+            except ValueError:
+                await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+                return
             
-            if group_id:
-                try:
-                    days = int(message.text.strip())
-                    if 0 <= days <= 365:
-                        group_str = str(group_id)
-                        settings[group_str]['exempted_days'] = days
-                        await save_settings_to_tg()
-                        
-                        await message.reply(f"✅ <b>تم تعيين أيام الاستثناء:</b> {days} يوم")
-                        await state.clear()
-                        
-                        text, keyboard = get_members_menu(group_id)
-                        await message.answer(text, reply_markup=keyboard)
-                    else:
-                        await message.reply("⚠️ الرجاء إدخال رقم بين 0 و 365")
-                except ValueError:
-                    await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+            await state.clear()
+            text, keyboard = get_members_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
         
-        elif current_state == Form.waiting_for_custom_duration.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+        elif current_state == Form.waiting_for_exempt_days.state and group_id:
+            try:
+                days = int(message.text.strip())
+                if 0 <= days <= 365:
+                    group_str = str(group_id)
+                    settings[group_str]['exempted_days'] = days
+                    await save_settings_to_tg()
+                    await message.reply(f"✅ <b>تم تعيين أيام الاستثناء:</b> {days} يوم")
+                else:
+                    await message.reply("⚠️ الرجاء إدخال رقم بين 0 و 365")
+                    return
+            except ValueError:
+                await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+                return
             
-            if group_id:
-                try:
-                    seconds = int(message.text.strip())
-                    if 1 <= seconds <= 31536000:  # حتى سنة
-                        group_str = str(group_id)
-                        settings[group_str]['mute_duration'] = seconds
-                        await save_settings_to_tg()
-                        
-                        dur_val, dur_unit = seconds_to_value_unit(seconds)
-                        await message.reply(f"✅ <b>تم تعيين المدة:</b> {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}")
-                        await state.clear()
-                        
-                        text, keyboard = get_duration_menu(group_id)
-                        await message.answer(text, reply_markup=keyboard)
-                    else:
-                        await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 31536000 (سنة)")
-                except ValueError:
-                    await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+            await state.clear()
+            text, keyboard = get_members_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
         
-        elif current_state == Form.waiting_for_notification_time.state:
-            data = await state.get_data()
-            group_id = data.get('group_id')
+        elif current_state == Form.waiting_for_custom_duration.state and group_id:
+            try:
+                seconds = int(message.text.strip())
+                if 1 <= seconds <= 31536000:
+                    group_str = str(group_id)
+                    settings[group_str]['mute_duration'] = seconds
+                    await save_settings_to_tg()
+                    
+                    dur_val, dur_unit = seconds_to_value_unit(seconds)
+                    await message.reply(f"✅ <b>تم تعيين المدة:</b> {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}")
+                else:
+                    await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 31536000 (سنة)")
+                    return
+            except ValueError:
+                await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+                return
             
-            if group_id:
-                try:
-                    seconds = int(message.text.strip())
-                    if 1 <= seconds <= 86400:  # حتى 24 ساعة
-                        group_str = str(group_id)
-                        settings[group_str]['notification_duration'] = seconds
-                        await save_settings_to_tg()
-                        
-                        minutes = seconds // 60
-                        remaining_seconds = seconds % 60
-                        
-                        if minutes > 0:
-                            duration_text = f"{minutes} دقيقة"
-                            if remaining_seconds > 0:
-                                duration_text += f" و{remaining_seconds} ثانية"
-                        else:
-                            duration_text = f"{seconds} ثانية"
-                        
-                        await message.reply(f"✅ <b>تم تعيين مدة الإشعار:</b> {duration_text}")
-                        await state.clear()
-                        
-                        text, keyboard = get_notifications_menu(group_id)
-                        await message.answer(text, reply_markup=keyboard)
+            await state.clear()
+            text, keyboard = get_duration_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
+        
+        elif current_state == Form.waiting_for_notification_time.state and group_id:
+            try:
+                seconds = int(message.text.strip())
+                if 1 <= seconds <= 86400:
+                    group_str = str(group_id)
+                    settings[group_str]['notification_duration'] = seconds
+                    await save_settings_to_tg()
+                    
+                    minutes = seconds // 60
+                    remaining_seconds = seconds % 60
+                    
+                    if minutes > 0:
+                        duration_text = f"{minutes} دقيقة"
+                        if remaining_seconds > 0:
+                            duration_text += f" و{remaining_seconds} ثانية"
                     else:
-                        await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 86400 (24 ساعة)")
-                except ValueError:
-                    await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+                        duration_text = f"{seconds} ثانية"
+                    
+                    await message.reply(f"✅ <b>تم تعيين مدة الإشعار:</b> {duration_text}")
+                else:
+                    await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 86400 (24 ساعة)")
+                    return
+            except ValueError:
+                await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+                return
+            
+            await state.clear()
+            text, keyboard = get_notifications_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
+        
+        elif current_state == Form.waiting_for_night_start.state and group_id:
+            time_str = message.text.strip()
+            try:
+                # التحقق من تنسيق الوقت
+                datetime.strptime(time_str, '%H:%M')
+                group_str = str(group_id)
+                settings[group_str]['night_start'] = time_str
+                await save_settings_to_tg()
+                await message.reply(f"✅ <b>تم تعيين وقت البدء:</b> {time_str}")
+            except ValueError:
+                await message.reply("⚠️ تنسوق الوقت غير صحيح. استخدم HH:MM (مثال: 22:00)")
+                return
+            
+            await state.clear()
+            text, keyboard = get_night_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
+        
+        elif current_state == Form.waiting_for_night_end.state and group_id:
+            time_str = message.text.strip()
+            try:
+                datetime.strptime(time_str, '%H:%M')
+                group_str = str(group_id)
+                settings[group_str]['night_end'] = time_str
+                await save_settings_to_tg()
+                await message.reply(f"✅ <b>تم تعيين وقت الانتهاء:</b> {time_str}")
+            except ValueError:
+                await message.reply("⚠️ تنسوق الوقت غير صحيح. استخدم HH:MM (مثال: 06:00)")
+                return
+            
+            await state.clear()
+            text, keyboard = get_night_menu(group_id)
+            await message.answer(text, reply_markup=keyboard)
         
         else:
-            # إذا لم يكن في حالة انتظار، تحقق إذا كان في مجموعة
             await check_group_message(message)
     
     else:
-        # إذا كانت رسالة في مجموعة
         await check_group_message(message)
 
 async def check_group_message(message: types.Message):
-    """التحقق من رسائل المجموعة"""
     chat_id = message.chat.id
     if chat_id not in ALLOWED_GROUP_IDS:
         return
@@ -1123,15 +1212,12 @@ async def check_group_message(message: types.Message):
     user_id = message.from_user.id
     group_str = str(chat_id)
     
-    # تخطي الإداريين
     if await is_admin(chat_id, user_id):
         return
     
-    # التحقق من الاستثناءات
     if user_id in settings[group_str]['exempted_users']:
         return
     
-    # التحقق من أيام الاستثناء
     if settings[group_str]['exempted_days'] > 0:
         join_date = await get_user_join_date(chat_id, user_id)
         if join_date:
@@ -1139,7 +1225,6 @@ async def check_group_message(message: types.Message):
             if days_in_group >= settings[group_str]['exempted_days']:
                 return
     
-    # التحقق من الوضع الليلي
     if settings[group_str]['night_mode_enabled']:
         start = datetime.strptime(settings[group_str]['night_start'], '%H:%M').time()
         end = datetime.strptime(settings[group_str]['night_end'], '%H:%M').time()
@@ -1160,7 +1245,6 @@ async def check_group_message(message: types.Message):
                 pass
             return
     
-    # التحقق من المحتوى
     text = (message.text or message.caption or "").strip()
     if not text:
         return
@@ -1169,28 +1253,23 @@ async def check_group_message(message: types.Message):
         await handle_violation(chat_id, user_id, message, group_str)
 
 async def handle_violation(chat_id: int, user_id: int, message: types.Message, group_str: str):
-    """معالجة المخالفات مع إشعارات مخصصة"""
     full_name = message.from_user.full_name or "مستخدم"
     mode = settings[group_str]['mode']
     
-    # تسجيل المخالفة
     if 'violations' not in settings[group_str]:
         settings[group_str]['violations'] = {}
     
     violations = settings[group_str]['violations'].get(user_id, 0) + 1
     settings[group_str]['violations'][user_id] = violations
     
-    # حذف الرسالة المخالفة
     try:
         await message.delete()
     except:
         pass
     
-    # إنشاء نص الإشعار الأساسي
     user_link = f'<a href="tg://user?id={user_id}">{full_name}</a>'
     notification_text = ""
     
-    # تطبيق العقوبة مع رسالة مناسبة
     if mode == 'delete_only':
         notification_text = f"🗑️ <b>تم حذف رسالة مخالفة</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
     
@@ -1287,15 +1366,12 @@ async def handle_violation(chat_id: int, user_id: int, message: types.Message, g
         else:
             notification_text = f"⚠️ <b>تحذير #{warnings_count}</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n🔔 عند 3 تحذيرات = حظر"
     
-    # إضافة توقيع البوت
     notification_text += f"\n\n🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
     
-    # إرسال الإشعار
     if notification_text:
         try:
             notification_msg = await bot.send_message(chat_id, notification_text)
             
-            # حذف الإشعار بعد المدة المحددة إذا لم يكن للأبد
             if not settings[group_str]['keep_notification']:
                 asyncio.create_task(delete_notification_later(
                     chat_id, 
@@ -1308,18 +1384,9 @@ async def handle_violation(chat_id: int, user_id: int, message: types.Message, g
     await save_settings_to_tg()
 
 async def delete_notification_later(chat_id: int, message_id: int, delay_seconds: int):
-    """حذف الإشعار بعد تأخير"""
     await asyncio.sleep(delay_seconds)
     try:
         await bot.delete_message(chat_id, message_id)
-    except:
-        pass
-
-async def delete_message_later(message: types.Message, delay: int):
-    """حذف الرسالة بعد تأخير"""
-    await asyncio.sleep(delay)
-    try:
-        await message.delete()
     except:
         pass
 
