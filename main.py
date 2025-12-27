@@ -15,6 +15,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # ================== الإعدادات ==================
 TOKEN = os.getenv("TOKEN")
@@ -24,8 +25,9 @@ ALLOWED_GROUP_IDS = [-1001224326322, -1002370282238]
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+storage = MemoryStorage()
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+dp = Dispatcher(storage=storage)
 
 # قاعدة البيانات في قناة تيليجرام
 DB_CHAT_ID = -1002370282238
@@ -40,6 +42,8 @@ class Form(StatesGroup):
     waiting_for_exempt_days = State()
     waiting_for_user_id = State()
     waiting_for_duration = State()
+    waiting_for_custom_duration = State()
+    waiting_for_notification_time = State()
 
 # ================== الأنماط الأساسية ==================
 def normalize_digits(text: str) -> str:
@@ -64,6 +68,7 @@ temp_data = {}  # تخزين مؤقت للبيانات
 
 # وحدات الوقت
 unit_seconds = {
+    'second': 1,
     'minute': 60, 
     'hour': 3600, 
     'day': 86400, 
@@ -73,6 +78,7 @@ unit_seconds = {
 }
 
 unit_to_text_dict = {
+    'second': 'ثانية',
     'minute': 'دقيقة', 
     'hour': 'ساعة', 
     'day': 'يوم', 
@@ -83,12 +89,12 @@ unit_to_text_dict = {
 
 def seconds_to_value_unit(seconds: int):
     if seconds == 0:
-        return 0, 'minute'
+        return 0, 'second'
     for unit, secs in sorted(unit_seconds.items(), key=lambda x: x[1], reverse=True):
         if seconds >= secs:
             value = seconds // secs
             return value, unit
-    return seconds // 60, 'minute'
+    return seconds, 'second'
 
 def mode_to_text(mode):
     modes = {
@@ -195,7 +201,9 @@ async def load_settings_from_tg():
             'exempted_days': 0,
             'exempted_users': [],
             'warnings': {},
-            'last_update': time.time()
+            'last_update': time.time(),
+            'notification_duration': 120,  # مدة بقاء الإشعار بالثواني (افتراضي 120 ثانية = دقيقتين)
+            'keep_notification': False  # هل يبقى الإشعار للأبد؟
         }
 
     try:
@@ -314,6 +322,8 @@ def get_main_control_panel(group_id):
     text += f"• الدول المحظورة: {len(settings[group_str]['banned_countries'])} دولة\n"
     text += f"• أيام استثناء الأعضاء: {settings[group_str]['exempted_days']} يوم\n"
     text += f"• حماية الأعضاء الجدد: {settings[group_str]['membership_days']} يوم\n"
+    text += f"• مدة الإشعار: {settings[group_str]['notification_duration']} ثانية\n"
+    text += f"• بقاء الإشعار: {'✅ للأبد' if settings[group_str]['keep_notification'] else '⏱️ مؤقت'}\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚔️ إعدادات الحماية الأساسية", callback_data=f"protection_{group_id}")],
@@ -321,6 +331,7 @@ def get_main_control_panel(group_id):
         [InlineKeyboardButton(text="🔗 إدارة الروابط الممنوعة", callback_data=f"links_{group_id}")],
         [InlineKeyboardButton(text="🌍 إدارة الدول المحظورة", callback_data=f"countries_{group_id}")],
         [InlineKeyboardButton(text="👤 إدارة الأعضاء والاستثناءات", callback_data=f"members_{group_id}")],
+        [InlineKeyboardButton(text="⏰ إدارة الإشعارات", callback_data=f"notifications_{group_id}")],
         [InlineKeyboardButton(text="🔄 تحديث اللوحة", callback_data=f"refresh_{group_id}")]
     ])
     
@@ -380,12 +391,14 @@ def get_duration_menu(group_id):
     text += "اختر المدة المناسبة:"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="30 ثانية", callback_data=f"setdur_30_{group_id}")],
         [InlineKeyboardButton(text="1 دقيقة", callback_data=f"setdur_60_{group_id}")],
+        [InlineKeyboardButton(text="5 دقائق", callback_data=f"setdur_300_{group_id}")],
         [InlineKeyboardButton(text="1 ساعة", callback_data=f"setdur_3600_{group_id}")],
         [InlineKeyboardButton(text="1 يوم", callback_data=f"setdur_86400_{group_id}")],
         [InlineKeyboardButton(text="1 أسبوع", callback_data=f"setdur_604800_{group_id}")],
         [InlineKeyboardButton(text="1 شهر", callback_data=f"setdur_2592000_{group_id}")],
-        [InlineKeyboardButton(text="تخصيص مدة", callback_data=f"custom_dur_{group_id}")],
+        [InlineKeyboardButton(text="تخصيص مدة ⚙️", callback_data=f"custom_dur_{group_id}")],
         [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_{group_id}")]
     ])
     
@@ -407,6 +420,41 @@ def get_night_menu(group_id):
         [InlineKeyboardButton(text="⏰ تعديل وقت البدء", callback_data=f"editstart_{group_id}")],
         [InlineKeyboardButton(text="⏰ تعديل وقت الانتهاء", callback_data=f"editend_{group_id}")],
         [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"protection_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+def get_notifications_menu(group_id):
+    group_str = str(group_id)
+    notification_duration = settings[group_str]['notification_duration']
+    keep_notification = settings[group_str]['keep_notification']
+    
+    text = "⏰ <b>إدارة إشعارات البوت</b>\n\n"
+    text += "📖 <i>التحكم في مدة بقاء رسائل الإشعار في المجموعة</i>\n\n"
+    
+    if keep_notification:
+        text += f"<b>حالة الإشعارات:</b> ✅ باقية للأبد\n\n"
+    else:
+        minutes = notification_duration // 60
+        seconds = notification_duration % 60
+        if minutes > 0:
+            duration_text = f"{minutes} دقيقة"
+            if seconds > 0:
+                duration_text += f" و{seconds} ثانية"
+        else:
+            duration_text = f"{seconds} ثانية"
+        
+        text += f"<b>مدة الإشعار:</b> {duration_text}\n\n"
+    
+    text += "<b>ملاحظة:</b>\n"
+    text += "• عند تفعيل 'بقاء للأبد' لن يتم حذف الإشعارات تلقائياً\n"
+    text += "• عند تعطيله، سيتم حذف الإشعارات بعد المدة المحددة\n\n"
+    text += "اختر الإعداد الذي تريد تعديله:"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{'❌ تعطيل' if keep_notification else '✅ تفعيل'} البقاء للأبد", callback_data=f"toggle_keep_{group_id}")],
+        [InlineKeyboardButton(text="⏱️ تغيير مدة الإشعار", callback_data=f"change_notif_duration_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
     ])
     
     return text, keyboard
@@ -584,11 +632,22 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
         
         elif data.startswith("setmode_"):
             parts = data.split("_")
-            if len(parts) == 3:
-                mode = parts[1]
+            if len(parts) >= 3:
+                mode_name = parts[1]
                 group_id = int(parts[2])
                 group_str = str(group_id)
                 
+                # تحديد الوضع المناسب
+                mode_map = {
+                    'mute': 'mute',
+                    'ban': 'ban',
+                    'mute_then_ban': 'mute_then_ban',
+                    'delete_only': 'delete_only',
+                    'warn_then_mute': 'warn_then_mute',
+                    'warn_then_ban': 'warn_then_ban'
+                }
+                
+                mode = mode_map.get(mode_name, 'ban')
                 settings[group_str]['mode'] = mode
                 await save_settings_to_tg()
                 
@@ -612,9 +671,31 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
                 await save_settings_to_tg()
                 
                 dur_val, dur_unit = seconds_to_value_unit(seconds)
-                await callback.answer(f"✅ تم تعيين المدة: {dur_val} {unit_to_text_dict.get(dur_unit)}")
+                await callback.answer(f"✅ تم تعيين المدة: {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}")
                 text, keyboard = get_duration_menu(group_id)
                 await safe_edit_message(callback, text, keyboard)
+        
+        elif data.startswith("custom_dur_"):
+            group_id = int(data.split("_")[2])
+            await state.set_state(Form.waiting_for_custom_duration)
+            await state.update_data(group_id=group_id)
+            
+            await callback.message.answer(
+                "⚙️ <b>تخصيص مدة العقوبة</b>\n\n"
+                "أرسل المدة بالثواني:\n\n"
+                "<b>أمثلة:</b>\n"
+                "• 60 = 1 دقيقة\n"
+                "• 300 = 5 دقائق\n"
+                "• 3600 = 1 ساعة\n"
+                "• 86400 = 1 يوم\n"
+                "• 604800 = 1 أسبوع\n"
+                "• 2592000 = 1 شهر\n"
+                "• 31536000 = 1 سنة\n\n"
+                "<i>أدخل الرقم المناسب:</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"duration_{group_id}")]
+                ])
+            )
         
         elif data.startswith("night_"):
             group_id = int(data.split("_")[1])
@@ -632,6 +713,45 @@ async def handle_callback_query(callback: types.CallbackQuery, state: FSMContext
             await callback.answer(f"✅ تم {status} الوضع الليلي")
             text, keyboard = get_night_menu(group_id)
             await safe_edit_message(callback, text, keyboard)
+        
+        # إدارة الإشعارات
+        elif data.startswith("notifications_"):
+            group_id = int(data.split("_")[1])
+            text, keyboard = get_notifications_menu(group_id)
+            await safe_edit_message(callback, text, keyboard)
+        
+        elif data.startswith("toggle_keep_"):
+            group_id = int(data.split("_")[2])
+            group_str = str(group_id)
+            
+            settings[group_str]['keep_notification'] = not settings[group_str]['keep_notification']
+            await save_settings_to_tg()
+            
+            status = "تفعيل" if settings[group_str]['keep_notification'] else "تعطيل"
+            await callback.answer(f"✅ تم {status} بقاء الإشعار للأبد")
+            text, keyboard = get_notifications_menu(group_id)
+            await safe_edit_message(callback, text, keyboard)
+        
+        elif data.startswith("change_notif_duration_"):
+            group_id = int(data.split("_")[3])
+            await state.set_state(Form.waiting_for_notification_time)
+            await state.update_data(group_id=group_id)
+            
+            await callback.message.answer(
+                "⏱️ <b>تغيير مدة بقاء الإشعار</b>\n\n"
+                "أرسل المدة بالثواني:\n\n"
+                "<b>أمثلة:</b>\n"
+                "• 30 = 30 ثانية\n"
+                "• 60 = 1 دقيقة\n"
+                "• 120 = 2 دقيقة\n"
+                "• 300 = 5 دقائق\n"
+                "• 600 = 10 دقائق\n"
+                "• 3600 = 1 ساعة\n\n"
+                "<i>أدخل الرقم المناسب (أقل من 86400 ثانية = 24 ساعة):</i>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="↩️ إلغاء", callback_data=f"notifications_{group_id}")]
+                ])
+            )
         
         # الكلمات الممنوعة
         elif data.startswith("keywords_"):
@@ -810,18 +930,12 @@ async def show_main_panel(callback, group_id):
 async def safe_edit_message(callback, text, keyboard):
     """تعديل الرسالة بأمان لتجنب الخطأ message is not modified"""
     try:
-        # محاولة التعديل أولاً
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        # التحقق إذا كانت الرسالة نفسها
+        if callback.message.text != text or callback.message.reply_markup != keyboard:
+            await callback.message.edit_text(text, reply_markup=keyboard)
     except Exception as e:
-        if "message is not modified" in str(e):
-            # إذا كانت الرسالة نفسها، لا نفعّل شيئاً
-            logger.debug("الرسالة لم تتغير - تخطي")
-        else:
-            # خطأ آخر، نعيد المحاولة
-            try:
-                await callback.message.edit_text(text, reply_markup=keyboard)
-            except:
-                logger.error(f"فشل تعديل الرسالة: {e}")
+        if "message is not modified" not in str(e):
+            logger.error(f"خطأ في تعديل الرسالة: {e}")
 
 # ================== handler إدخال البيانات ==================
 @dp.message()
@@ -937,6 +1051,61 @@ async def handle_all_messages(message: types.Message, state: FSMContext):
                 except ValueError:
                     await message.reply("⚠️ الرجاء إدخال رقم صحيح")
         
+        elif current_state == Form.waiting_for_custom_duration.state:
+            data = await state.get_data()
+            group_id = data.get('group_id')
+            
+            if group_id:
+                try:
+                    seconds = int(message.text.strip())
+                    if 1 <= seconds <= 31536000:  # حتى سنة
+                        group_str = str(group_id)
+                        settings[group_str]['mute_duration'] = seconds
+                        await save_settings_to_tg()
+                        
+                        dur_val, dur_unit = seconds_to_value_unit(seconds)
+                        await message.reply(f"✅ <b>تم تعيين المدة:</b> {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}")
+                        await state.clear()
+                        
+                        text, keyboard = get_duration_menu(group_id)
+                        await message.answer(text, reply_markup=keyboard)
+                    else:
+                        await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 31536000 (سنة)")
+                except ValueError:
+                    await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+        
+        elif current_state == Form.waiting_for_notification_time.state:
+            data = await state.get_data()
+            group_id = data.get('group_id')
+            
+            if group_id:
+                try:
+                    seconds = int(message.text.strip())
+                    if 1 <= seconds <= 86400:  # حتى 24 ساعة
+                        group_str = str(group_id)
+                        settings[group_str]['notification_duration'] = seconds
+                        await save_settings_to_tg()
+                        
+                        minutes = seconds // 60
+                        remaining_seconds = seconds % 60
+                        
+                        if minutes > 0:
+                            duration_text = f"{minutes} دقيقة"
+                            if remaining_seconds > 0:
+                                duration_text += f" و{remaining_seconds} ثانية"
+                        else:
+                            duration_text = f"{seconds} ثانية"
+                        
+                        await message.reply(f"✅ <b>تم تعيين مدة الإشعار:</b> {duration_text}")
+                        await state.clear()
+                        
+                        text, keyboard = get_notifications_menu(group_id)
+                        await message.answer(text, reply_markup=keyboard)
+                    else:
+                        await message.reply("⚠️ الرجاء إدخال رقم بين 1 و 86400 (24 ساعة)")
+                except ValueError:
+                    await message.reply("⚠️ الرجاء إدخال رقم صحيح")
+        
         else:
             # إذا لم يكن في حالة انتظار، تحقق إذا كان في مجموعة
             await check_group_message(message)
@@ -997,19 +1166,12 @@ async def check_group_message(message: types.Message):
         return
     
     if contains_spam(text, group_str):
-        await handle_violation(chat_id, user_id, message)
+        await handle_violation(chat_id, user_id, message, group_str)
 
-async def handle_violation(chat_id: int, user_id: int, message: types.Message):
-    """معالجة المخالفات"""
-    group_str = str(chat_id)
+async def handle_violation(chat_id: int, user_id: int, message: types.Message, group_str: str):
+    """معالجة المخالفات مع إشعارات مخصصة"""
     full_name = message.from_user.full_name or "مستخدم"
     mode = settings[group_str]['mode']
-    
-    # حذف الرسالة المخالفة
-    try:
-        await message.delete()
-    except:
-        pass
     
     # تسجيل المخالفة
     if 'violations' not in settings[group_str]:
@@ -1018,19 +1180,27 @@ async def handle_violation(chat_id: int, user_id: int, message: types.Message):
     violations = settings[group_str]['violations'].get(user_id, 0) + 1
     settings[group_str]['violations'][user_id] = violations
     
-    # تطبيق العقوبة
+    # حذف الرسالة المخالفة
+    try:
+        await message.delete()
+    except:
+        pass
+    
+    # إنشاء نص الإشعار الأساسي
+    user_link = f'<a href="tg://user?id={user_id}">{full_name}</a>'
+    notification_text = ""
+    
+    # تطبيق العقوبة مع رسالة مناسبة
     if mode == 'delete_only':
-        notify = f"🗑️ <b>تم حذف رسالة مخالفة</b>\n👤 {full_name}"
-        msg = await bot.send_message(chat_id, notify)
-        asyncio.create_task(delete_message_later(msg, 5))
+        notification_text = f"🗑️ <b>تم حذف رسالة مخالفة</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
     
     elif mode == 'ban':
         try:
             await bot.ban_chat_member(chat_id, user_id)
-            notify = f"🚫 <b>تم حظر</b> {full_name}"
-            await bot.send_message(chat_id, notify)
+            notification_text = f"🚫 <b>تم حظر العضو</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n⚡ حظر فوري"
         except Exception as e:
             logger.error(f"خطأ في الحظر: {e}")
+            notification_text = f"⚠️ <b>فشل الحظر</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
     
     elif mode == 'mute':
         duration = settings[group_str]['mute_duration']
@@ -1044,10 +1214,10 @@ async def handle_violation(chat_id: int, user_id: int, message: types.Message):
             )
             
             dur_val, dur_unit = seconds_to_value_unit(duration)
-            notify = f"🔇 <b>تم كتم</b> {full_name} لمدة {dur_val} {unit_to_text_dict.get(dur_unit)}"
-            await bot.send_message(chat_id, notify)
+            notification_text = f"🔇 <b>تم كتم العضو</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n⏰ المدة: {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}"
         except Exception as e:
             logger.error(f"خطأ في الكتم: {e}")
+            notification_text = f"⚠️ <b>فشل الكتم</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
     
     elif mode == 'mute_then_ban':
         if violations == 1:
@@ -1062,19 +1232,88 @@ async def handle_violation(chat_id: int, user_id: int, message: types.Message):
                 )
                 
                 dur_val, dur_unit = seconds_to_value_unit(duration)
-                notify = f"🔇 <b>كتم أولى</b> {full_name} لمدة {dur_val} {unit_to_text_dict.get(dur_unit)}"
-                await bot.send_message(chat_id, notify)
+                notification_text = f"🔇 <b>كتم أولى (تحذير)</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n⏰ المدة: {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}\n⚠️ المخالفة الثانية = حظر دائم"
             except Exception as e:
                 logger.error(f"خطأ في الكتم: {e}")
+                notification_text = f"⚠️ <b>فشل الكتم</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
         else:
             try:
                 await bot.ban_chat_member(chat_id, user_id)
-                notify = f"🚫 <b>تم حظر</b> {full_name} بعد مخالفة ثانية"
-                await bot.send_message(chat_id, notify)
+                notification_text = f"🚫 <b>تم حظر العضو (مخالفة ثانية)</b>\n👤 {user_link}\n📛 مخالفتين\n⚡ حظر دائم"
             except Exception as e:
                 logger.error(f"خطأ في الحظر: {e}")
+                notification_text = f"⚠️ <b>فشل الحظر</b>\n👤 {user_link}\n📛 مخالفتين"
+    
+    elif mode == 'warn_then_mute':
+        if 'warnings' not in settings[group_str]:
+            settings[group_str]['warnings'] = {}
+        
+        warnings_count = settings[group_str]['warnings'].get(user_id, 0) + 1
+        settings[group_str]['warnings'][user_id] = warnings_count
+        
+        if warnings_count >= 3:
+            duration = settings[group_str]['mute_duration']
+            until_date = datetime.now() + timedelta(seconds=duration)
+            
+            try:
+                await bot.restrict_chat_member(
+                    chat_id, user_id,
+                    permissions=types.ChatPermissions(can_send_messages=False),
+                    until_date=until_date
+                )
+                
+                dur_val, dur_unit = seconds_to_value_unit(duration)
+                notification_text = f"🔇 <b>تم كتم العضو (3 تحذيرات)</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n⚠️ تحذيرات: {warnings_count}\n⏰ المدة: {dur_val} {unit_to_text_dict.get(dur_unit, dur_unit)}"
+            except Exception as e:
+                logger.error(f"خطأ في الكتم: {e}")
+                notification_text = f"⚠️ <b>فشل الكتم</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
+        else:
+            notification_text = f"⚠️ <b>تحذير #{warnings_count}</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n🔔 عند 3 تحذيرات = كتم"
+    
+    elif mode == 'warn_then_ban':
+        if 'warnings' not in settings[group_str]:
+            settings[group_str]['warnings'] = {}
+        
+        warnings_count = settings[group_str]['warnings'].get(user_id, 0) + 1
+        settings[group_str]['warnings'][user_id] = warnings_count
+        
+        if warnings_count >= 3:
+            try:
+                await bot.ban_chat_member(chat_id, user_id)
+                notification_text = f"🚫 <b>تم حظر العضو (3 تحذيرات)</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n⚠️ تحذيرات: {warnings_count}\n⚡ حظر دائم"
+            except Exception as e:
+                logger.error(f"خطأ في الحظر: {e}")
+                notification_text = f"⚠️ <b>فشل الحظر</b>\n👤 {user_link}\n📛 مخالفة #{violations}"
+        else:
+            notification_text = f"⚠️ <b>تحذير #{warnings_count}</b>\n👤 {user_link}\n📛 مخالفة #{violations}\n🔔 عند 3 تحذيرات = حظر"
+    
+    # إضافة توقيع البوت
+    notification_text += f"\n\n🛡️ <i>المجموعة محمية بواسطة الحارس الأمني</i>"
+    
+    # إرسال الإشعار
+    if notification_text:
+        try:
+            notification_msg = await bot.send_message(chat_id, notification_text)
+            
+            # حذف الإشعار بعد المدة المحددة إذا لم يكن للأبد
+            if not settings[group_str]['keep_notification']:
+                asyncio.create_task(delete_notification_later(
+                    chat_id, 
+                    notification_msg.message_id, 
+                    settings[group_str]['notification_duration']
+                ))
+        except Exception as e:
+            logger.error(f"خطأ في إرسال الإشعار: {e}")
     
     await save_settings_to_tg()
+
+async def delete_notification_later(chat_id: int, message_id: int, delay_seconds: int):
+    """حذف الإشعار بعد تأخير"""
+    await asyncio.sleep(delay_seconds)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except:
+        pass
 
 async def delete_message_later(message: types.Message, delay: int):
     """حذف الرسالة بعد تأخير"""
