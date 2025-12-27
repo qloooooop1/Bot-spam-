@@ -4,7 +4,7 @@ import os
 import re
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from aiogram import Bot, Dispatcher, types
@@ -210,20 +210,42 @@ async def night_mode_checker():
 def get_duration_editor(group_id):
     value = temp_duration[group_id]['value']
     unit = temp_duration[group_id]['unit']
-    text = f"🕒 <b>تحرير مدة الكتم</b>\n\nالقيمة الحالية: {value} {unit_to_text_dict.get(unit, unit)}\n\nاستخدم الأزرار للتعديل:"
+    unit_text = unit_to_text_dict.get(unit, unit)
+    
+    if unit == 'year' and value >= 100:
+        text = "⚠️ <b>تحذير:</b> مدة الكتم طويلة جداً (100 سنة أو أكثر)!\n"
+    elif unit == 'month' and value >= 120:
+        text = "⚠️ <b>تحذير:</b> مدة الكتم طويلة جداً (10 سنوات أو أكثر)!\n"
+    else:
+        text = ""
+    
+    text += f"🕒 <b>تحرير مدة الكتم</b>\n\nالقيمة الحالية: {value} {unit_text}\n\nاستخدم الأزرار للتعديل:"
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="-10", callback_data=f"dur_minus10_{group_id}"),
-         InlineKeyboardButton(text="-1", callback_data=f"dur_minus1_{group_id}"),
-         InlineKeyboardButton(text=f"{value}", callback_data="ignore"),
-         InlineKeyboardButton(text="+1", callback_data=f"dur_plus1_{group_id}"),
-         InlineKeyboardButton(text="+10", callback_data=f"dur_plus10_{group_id}")],
-        [InlineKeyboardButton(text=f"✅ دقيقة" if unit == 'minute' else "دقيقة", callback_data=f"dur_unit_minute_{group_id}"),
-         InlineKeyboardButton(text=f"✅ ساعة" if unit == 'hour' else "ساعة", callback_data=f"dur_unit_hour_{group_id}"),
-         InlineKeyboardButton(text=f"✅ يوم" if unit == 'day' else "يوم", callback_data=f"dur_unit_day_{group_id}")],
-        [InlineKeyboardButton(text=f"✅ شهر" if unit == 'month' else "شهر", callback_data=f"dur_unit_month_{group_id}"),
-         InlineKeyboardButton(text=f"✅ سنة" if unit == 'year' else "سنة", callback_data=f"dur_unit_year_{group_id}")],
-        [InlineKeyboardButton(text="💾 حفظ", callback_data=f"dur_save_{group_id}"),
-         InlineKeyboardButton(text="❌ إلغاء", callback_data=f"dur_cancel_{group_id}")]
+        [
+            InlineKeyboardButton(text="-10", callback_data=f"dur_minus10_{group_id}"),
+            InlineKeyboardButton(text="-1", callback_data=f"dur_minus1_{group_id}"),
+            InlineKeyboardButton(text=f"{value}", callback_data="ignore"),
+            InlineKeyboardButton(text="+1", callback_data=f"dur_plus1_{group_id}"),
+            InlineKeyboardButton(text="+10", callback_data=f"dur_plus10_{group_id}")
+        ],
+        [
+            InlineKeyboardButton(text="⬇️ تغيير الوحدة", callback_data="ignore")
+        ],
+        [
+            InlineKeyboardButton(text=f"✓ دقيقة" if unit == 'minute' else "دقيقة", callback_data=f"dur_unit_minute_{group_id}"),
+            InlineKeyboardButton(text=f"✓ ساعة" if unit == 'hour' else "ساعة", callback_data=f"dur_unit_hour_{group_id}"),
+            InlineKeyboardButton(text=f"✓ يوم" if unit == 'day' else "يوم", callback_data=f"dur_unit_day_{group_id}")
+        ],
+        [
+            InlineKeyboardButton(text=f"✓ شهر" if unit == 'month' else "شهر", callback_data=f"dur_unit_month_{group_id}"),
+            InlineKeyboardButton(text=f"✓ سنة" if unit == 'year' else "سنة", callback_data=f"dur_unit_year_{group_id}")
+        ],
+        [
+            InlineKeyboardButton(text="💾 حفظ", callback_data=f"dur_save_{group_id}"),
+            InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}"),
+            InlineKeyboardButton(text="❌ إلغاء", callback_data=f"dur_cancel_{group_id}")
+        ]
     ])
     return text, keyboard
 
@@ -231,22 +253,93 @@ def get_duration_editor(group_id):
 def get_night_editor(group_id):
     start = temp_night[group_id]['start']
     end = temp_night[group_id]['end']
-    text = f"🕛 <b>تحرير توقيت الوضع الليلي</b>\n\nوقت الإغلاق: {start}\nوقت الفتح: {end}\n\nاختر الوقت:"
+    
+    # تحويل الوقت إلى صيغة 12 ساعة مع AM/PM
+    def format_12h(time_str):
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            period = "صباحاً" if hour < 12 else "مساءً"
+            hour_12 = hour if hour <= 12 else hour - 12
+            if hour_12 == 0:
+                hour_12 = 12
+            return f"{hour_12}:{minute:02d} {period}"
+        except:
+            return time_str
+    
+    start_12h = format_12h(start)
+    end_12h = format_12h(end)
+    
+    text = f"🌙 <b>تحرير توقيت الوضع الليلي</b>\n\n"
+    text += f"⏰ وقت الإغلاق: {start} ({start_12h})\n"
+    text += f"⏰ وقت الفتح: {end} ({end_12h})\n\n"
+    text += "استخدم الأزرار لتعديل الوقت:"
+    
+    # تقسيم الأزرار بشكل أكثر تنظيماً
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-    times = [f"{h:02d}:00" for h in range(0, 24, 1)] + [f"{h:02d}:30" for h in range(0, 24, 1)]
-    for i in range(0, len(times), 4):
-        row = []
-        for t in times[i:i+4]:
-            row.append(InlineKeyboardButton(text=t, callback_data=f"night_start_{t}_{group_id}"))
-        keyboard.inline_keyboard.append(row)
-        row = []
-        for t in times[i:i+4]:
-            row.append(InlineKeyboardButton(text=t, callback_data=f"night_end_{t}_{group_id}"))
-        keyboard.inline_keyboard.append(row)
+    
+    # ساعة الإغلاق
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="🕐 ساعة الإغلاق:", callback_data="ignore")
+    ])
+    
+    hour_buttons = []
+    for h in [22, 23, 0, 1, 2, 3, 4, 5]:
+        hour_str = f"{h:02d}"
+        hour_buttons.append(InlineKeyboardButton(
+            text=f"{hour_str}:00", 
+            callback_data=f"night_start_{hour_str}:00_{group_id}"
+        ))
+    
+    for i in range(0, len(hour_buttons), 4):
+        keyboard.inline_keyboard.append(hour_buttons[i:i+4])
+    
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="↔️ تعديل الوقت", callback_data="ignore")
+    ])
+    
+    # أزرار تعديل دقيقة الإغلاق
+    start_hour, start_minute = map(int, start.split(':'))
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="◀️ -30 دقيقة", callback_data=f"night_start_min30_{group_id}"),
+        InlineKeyboardButton(text="-15 دقيقة", callback_data=f"night_start_min15_{group_id}"),
+        InlineKeyboardButton(text=f"{start_minute:02d}", callback_data="ignore"),
+        InlineKeyboardButton(text="+15 دقيقة", callback_data=f"night_start_plus15_{group_id}"),
+        InlineKeyboardButton(text="+30 دقيقة ▶️", callback_data=f"night_start_plus30_{group_id}")
+    ])
+    
+    # ساعة الفتح
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="🕐 ساعة الفتح:", callback_data="ignore")
+    ])
+    
+    hour_buttons_end = []
+    for h in [6, 7, 8, 9, 10, 11, 12, 13]:
+        hour_str = f"{h:02d}"
+        hour_buttons_end.append(InlineKeyboardButton(
+            text=f"{hour_str}:00", 
+            callback_data=f"night_end_{hour_str}:00_{group_id}"
+        ))
+    
+    for i in range(0, len(hour_buttons_end), 4):
+        keyboard.inline_keyboard.append(hour_buttons_end[i:i+4])
+    
+    # أزرار تعديل دقيقة الفتح
+    end_hour, end_minute = map(int, end.split(':'))
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton(text="◀️ -30 دقيقة", callback_data=f"night_end_min30_{group_id}"),
+        InlineKeyboardButton(text="-15 دقيقة", callback_data=f"night_end_min15_{group_id}"),
+        InlineKeyboardButton(text=f"{end_minute:02d}", callback_data="ignore"),
+        InlineKeyboardButton(text="+15 دقيقة", callback_data=f"night_end_plus15_{group_id}"),
+        InlineKeyboardButton(text="+30 دقيقة ▶️", callback_data=f"night_end_plus30_{group_id}")
+    ])
+    
+    # أزرار التحكم
     keyboard.inline_keyboard.append([
         InlineKeyboardButton(text="💾 حفظ", callback_data=f"night_save_{group_id}"),
+        InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}"),
         InlineKeyboardButton(text="❌ إلغاء", callback_data=f"night_cancel_{group_id}")
     ])
+    
     return text, keyboard
 
 # ================== handler /start ==================
@@ -266,7 +359,7 @@ async def start_command(message: types.Message):
         intro_text = "🛡️ <b>مرحباً بك في لوحة تحكم بوت الحارس الأمني!</b>\n\nاختر المجموعة التي تريد إدارتها:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[])
         for gid, title in admin_groups:
-            keyboard.inline_keyboard.append([InlineKeyboardButton(text=f"إدارة {title}", callback_data=f"manage_{gid}")])
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text=f"⚙️ إدارة {title}", callback_data=f"manage_{gid}")])
         keyboard.inline_keyboard.append([InlineKeyboardButton(text="❓ مساعدة أو استفسار", url="https://t.me/ql_om")])
         await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
     else:
@@ -282,12 +375,112 @@ async def start_command(message: types.Message):
         ])
         await message.answer(intro_text, reply_markup=keyboard, disable_web_page_preview=True)
 
+# ================== لوحة التحكم الرئيسية ==================
+def get_main_control_panel(group_id):
+    group_str = str(group_id)
+    current_mode = settings[group_str]['mode']
+    current_duration = settings[group_str]['mute_duration']
+    duration_value, duration_unit = seconds_to_value_unit(current_duration)
+    night_enabled = settings[group_str]['night_mode_enabled']
+    night_start = settings[group_str]['night_start']
+    night_end = settings[group_str]['night_end']
+    
+    # تحويل الوقت إلى صيغة 12 ساعة
+    def format_12h(time_str):
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            period = "صباحاً" if hour < 12 else "مساءً"
+            hour_12 = hour if hour <= 12 else hour - 12
+            if hour_12 == 0:
+                hour_12 = 12
+            return f"{hour_12}:{minute:02d} {period}"
+        except:
+            return time_str
+    
+    night_start_12h = format_12h(night_start)
+    night_end_12h = format_12h(night_end)
+    
+    text = f"🛡️ <b>لوحة تحكم – المجموعة</b>\n\n"
+    text += f"<b>وضع الحماية:</b> {mode_to_text(current_mode)}\n"
+    text += f"<b>مدة الكتم:</b> {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
+    text += f"<b>الوضع الليلي:</b> {'✅ مفعل' if night_enabled else '❌ معطل'}\n"
+    if night_enabled:
+        text += f"<b>الإغلاق:</b> {night_start} ({night_start_12h})\n"
+        text += f"<b>الفتح:</b> {night_end} ({night_end_12h})\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ وضع الحماية", callback_data=f"mode_menu_{group_id}")],
+        [InlineKeyboardButton(text="⏱️ مدة الكتم", callback_data=f"dur_{group_id}")],
+        [InlineKeyboardButton(text="🌙 الوضع الليلي", callback_data=f"night_menu_{group_id}")],
+        [InlineKeyboardButton(text="🔄 تحديث اللوحة", callback_data=f"refresh_{group_id}")],
+        [InlineKeyboardButton(text="🏠 القائمة الرئيسية", callback_data="main_menu")]
+    ])
+    
+    return text, keyboard
+
+# ================== قائمة وضع الحماية ==================
+def get_mode_menu(group_id):
+    group_str = str(group_id)
+    current_mode = settings[group_str]['mode']
+    
+    text = "🛡️ <b>اختر وضع الحماية:</b>\n\n"
+    text += f"وضع الحماية الحالي: {mode_to_text(current_mode)}\n\n"
+    text += "• <b>كتم أولى:</b> كتم العضو عند المخالفة الأولى\n"
+    text += "• <b>حظر فوري:</b> حظر العضو عند المخالفة الأولى\n"
+    text += "• <b>كتم ثم حظر:</b> كتم أولاً، ثم حظر عند المخالفة الثانية\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✅ كتم أولى" if current_mode == 'mute' else "كتم أولى", callback_data=f"mode_mute_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ حظر فوري" if current_mode == 'ban' else "حظر فوري", callback_data=f"mode_ban_{group_id}")],
+        [InlineKeyboardButton(text=f"✅ كتم ثم حظر" if current_mode == 'mute_then_ban' else "كتم ثم حظر", callback_data=f"mode_mtb_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
+    ])
+    
+    return text, keyboard
+
+# ================== قائمة الوضع الليلي ==================
+def get_night_menu(group_id):
+    group_str = str(group_id)
+    night_enabled = settings[group_str]['night_mode_enabled']
+    night_start = settings[group_str]['night_start']
+    night_end = settings[group_str]['night_end']
+    
+    def format_12h(time_str):
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            period = "صباحاً" if hour < 12 else "مساءً"
+            hour_12 = hour if hour <= 12 else hour - 12
+            if hour_12 == 0:
+                hour_12 = 12
+            return f"{hour_12}:{minute:02d} {period}"
+        except:
+            return time_str
+    
+    text = "🌙 <b>إعدادات الوضع الليلي</b>\n\n"
+    text += f"الحالة: {'✅ <b>مفعل</b>' if night_enabled else '❌ <b>معطل</b>'}\n"
+    text += f"وقت الإغلاق: {night_start} ({format_12h(night_start)})\n"
+    text += f"وقت الفتح: {night_end} ({format_12h(night_end)})\n\n"
+    text += "الوضع الليلي يمنع المشاركات من غير الأدمن خلال الفترة المحددة."
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{'❌ إيقاف' if night_enabled else '✅ تشغيل'} الوضع الليلي", callback_data=f"night_toggle_{group_id}")],
+        [InlineKeyboardButton(text="⏰ تعديل التوقيت", callback_data=f"night_time_{group_id}")],
+        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_{group_id}")]
+    ])
+    
+    return text, keyboard
+
 # ================== handler الـ callback ==================
 @dp.callback_query()
 async def handle_callback_query(callback: types.CallbackQuery):
     data = callback.data
     await callback.answer()
 
+    if data == "main_menu":
+        # العودة إلى القائمة الرئيسية
+        await start_command(callback.message)
+        return
+        
     if data == "more_info":
         more_info_text = (
             "🛡️ <b>الحارس الأمني – بوت حماية متقدم</b>\n\n"
@@ -304,38 +497,36 @@ async def handle_callback_query(callback: types.CallbackQuery):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📞 تواصل معنا", url="https://t.me/ql_om")]
         ])
-        await callback.message.answer(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
+        await callback.message.edit_text(more_info_text, reply_markup=keyboard, disable_web_page_preview=True)
         return
 
     if data.startswith("manage_"):
         group_id = int(data.split("_")[1])
-        group_str = str(group_id)
-        if group_str not in settings:
-            return
+        text, keyboard = get_main_control_panel(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+        
+    if data.startswith("refresh_"):
+        group_id = int(data.split("_")[1])
+        text, keyboard = get_main_control_panel(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
+        
+    if data.startswith("back_"):
+        group_id = int(data.split("_")[1])
+        text, keyboard = get_main_control_panel(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
 
-        current_mode = settings[group_str]['mode']
-        current_duration = settings[group_str]['mute_duration']
-        duration_value, duration_unit = seconds_to_value_unit(current_duration)
-        night_enabled = settings[group_str]['night_mode_enabled']
-        night_start = settings[group_str]['night_start']
-        night_end = settings[group_str]['night_end']
+    if data.startswith("mode_menu_"):
+        group_id = int(data.split("_")[2])
+        text, keyboard = get_mode_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        return
 
-        text = f"🛡️ <b>لوحة تحكم – المجموعة {group_id}</b>\n\n"
-        text += f"وضع الحماية: {mode_to_text(current_mode)}\n"
-        text += f"مدة الكتم: {duration_value} {unit_to_text_dict.get(duration_unit, duration_unit)}\n"
-        text += f"الوضع الليلي: {'مفعل' if night_enabled else 'معطل'}\n"
-        if night_enabled:
-            text += f"من {night_start} إلى {night_end}\n"
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"{'✅ ' if current_mode == 'mute' else ''}كتم أولى", callback_data=f"mode_mute_{group_id}")],
-            [InlineKeyboardButton(text=f"{'✅ ' if current_mode == 'ban' else ''}حظر فوري", callback_data=f"mode_ban_{group_id}")],
-            [InlineKeyboardButton(text=f"{'✅ ' if current_mode == 'mute_then_ban' else ''}كتم ثم حظر", callback_data=f"mode_mtb_{group_id}")],
-            [InlineKeyboardButton(text="مدة الكتم", callback_data=f"dur_{group_id}")],
-            [InlineKeyboardButton(text=f"{'🌙 مفعل' if night_enabled else '🌙 معطل'} الوضع الليلي", callback_data=f"night_toggle_{group_id}")],
-            [InlineKeyboardButton(text="توقيت الوضع الليلي", callback_data=f"night_time_{group_id}")],
-        ])
-
+    if data.startswith("night_menu_"):
+        group_id = int(data.split("_")[2])
+        text, keyboard = get_night_menu(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
@@ -350,28 +541,34 @@ async def handle_callback_query(callback: types.CallbackQuery):
         settings[group_str]['mode'] = mode
         settings[group_str]['violations'] = {}
         await save_settings_to_tg()
-        await handle_callback_query(callback)  # إعادة عرض
+        
+        # تحديث القائمة
+        text, keyboard = get_mode_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
     # مدة الكتم
     if data.startswith("dur_"):
-        group_id = int(data.split("_")[1])
-        group_str = str(group_id)
-        current = settings[group_str]['mute_duration']
-        value, unit = seconds_to_value_unit(current)
-        temp_duration[group_id] = {'value': max(1, value), 'unit': unit}
-        text, keyboard = get_duration_editor(group_id)
-        await callback.message.edit_text(text, reply_markup=keyboard)
-        return
-
-    if data.startswith("dur_"):
         parts = data.split("_")
         action = parts[1]
-        param = parts[2] if len(parts) > 2 else None
-        group_id = int(parts[3]) if len(parts) > 3 else int(parts[-1])
-
+        
+        if len(parts) == 2:
+            # فتح محرر المدة
+            group_id = int(parts[1])
+            group_str = str(group_id)
+            current = settings[group_str]['mute_duration']
+            value, unit = seconds_to_value_unit(current)
+            temp_duration[group_id] = {'value': max(1, value), 'unit': unit}
+            text, keyboard = get_duration_editor(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            return
+            
+        group_id = int(parts[-1])
+        
         if action in ["plus1", "plus10", "minus1", "minus10"]:
-            delta = int(param)
+            delta = int(action.replace("plus", "").replace("minus", ""))
+            if "minus" in action:
+                delta = -delta
             temp_duration[group_id]['value'] = max(1, temp_duration[group_id]['value'] + delta)
         elif action.startswith("unit_"):
             unit = action[5:]
@@ -383,11 +580,14 @@ async def handle_callback_query(callback: types.CallbackQuery):
             settings[group_str]['violations'] = {}
             await save_settings_to_tg()
             del temp_duration[group_id]
-            await handle_callback_query(callback)
+            text, keyboard = get_main_control_panel(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
             return
         elif action == "cancel":
-            del temp_duration[group_id]
-            await handle_callback_query(callback)
+            if group_id in temp_duration:
+                del temp_duration[group_id]
+            text, keyboard = get_main_control_panel(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
             return
 
         text, keyboard = get_duration_editor(group_id)
@@ -400,23 +600,70 @@ async def handle_callback_query(callback: types.CallbackQuery):
         group_str = str(group_id)
         settings[group_str]['night_mode_enabled'] = not settings[group_str]['night_mode_enabled']
         await save_settings_to_tg()
-        await handle_callback_query(callback)
+        
+        text, keyboard = get_night_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
     if data.startswith("night_time_"):
-        group_id = int(data.split("_")[2])
-        group_str = str(group_id)
-        temp_night[group_id] = {'start': settings[group_str]['night_start'], 'end': settings[group_str]['night_end']}
+        parts = data.split("_")
+        if len(parts) == 3:
+            # فتح محرر الوقت
+            group_id = int(parts[2])
+            group_str = str(group_id)
+            temp_night[group_id] = {'start': settings[group_str]['night_start'], 'end': settings[group_str]['night_end']}
+            text, keyboard = get_night_editor(group_id)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            return
+
+    # تعديل وقت البداية والنهاية
+    if data.startswith("night_start_") or data.startswith("night_end_"):
+        parts = data.split("_")
+        action = parts[1]
+        
+        if parts[2] in ["min30", "min15", "plus15", "plus30"]:
+            # تعديل بالدقائق
+            group_id = int(parts[3])
+            current_time_str = temp_night[group_id][action]
+            current_time = datetime.strptime(current_time_str, '%H:%M')
+            
+            if parts[2] == "min30":
+                new_time = current_time - timedelta(minutes=30)
+            elif parts[2] == "min15":
+                new_time = current_time - timedelta(minutes=15)
+            elif parts[2] == "plus15":
+                new_time = current_time + timedelta(minutes=15)
+            elif parts[2] == "plus30":
+                new_time = current_time + timedelta(minutes=30)
+                
+            temp_night[group_id][action] = new_time.strftime('%H:%M')
+        else:
+            # تعيين وقت مباشر
+            time_val = parts[2]
+            group_id = int(parts[3])
+            temp_night[group_id][action] = time_val
+            
         text, keyboard = get_night_editor(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
-    if data.startswith("night_start_") or data.startswith("night_end_"):
+    if data.startswith("night_end_") and data.split("_")[2] in ["min30", "min15", "plus15", "plus30"]:
         parts = data.split("_")
         action = parts[1]
-        time_val = parts[2]
         group_id = int(parts[3])
-        temp_night[group_id][action] = time_val
+        current_time_str = temp_night[group_id][action]
+        current_time = datetime.strptime(current_time_str, '%H:%M')
+        
+        if parts[2] == "min30":
+            new_time = current_time - timedelta(minutes=30)
+        elif parts[2] == "min15":
+            new_time = current_time - timedelta(minutes=15)
+        elif parts[2] == "plus15":
+            new_time = current_time + timedelta(minutes=15)
+        elif parts[2] == "plus30":
+            new_time = current_time + timedelta(minutes=30)
+            
+        temp_night[group_id][action] = new_time.strftime('%H:%M')
         text, keyboard = get_night_editor(group_id)
         await callback.message.edit_text(text, reply_markup=keyboard)
         return
@@ -427,21 +674,27 @@ async def handle_callback_query(callback: types.CallbackQuery):
         settings[group_str]['night_start'] = temp_night[group_id]['start']
         settings[group_str]['night_end'] = temp_night[group_id]['end']
         await save_settings_to_tg()
-        del temp_night[group_id]
-        await handle_callback_query(callback)
+        
+        if group_id in temp_night:
+            del temp_night[group_id]
+            
+        text, keyboard = get_night_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
     if data.startswith("night_cancel_"):
         group_id = int(data.split("_")[2])
-        del temp_night[group_id]
-        await handle_callback_query(callback)
+        if group_id in temp_night:
+            del temp_night[group_id]
+            
+        text, keyboard = get_night_menu(group_id)
+        await callback.message.edit_text(text, reply_markup=keyboard)
         return
 
 # ================== handler الرسائل ==================
 @dp.message()
 async def check_message(message: types.Message):
     if message.chat.type == 'private':
-        # رد خاص
         await message.answer("🛡️ شكرًا لاهتمامك! تواصل معنا للتسجيل 👇", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📞 تواصل معنا", url="https://t.me/ql_om")]
         ]))
