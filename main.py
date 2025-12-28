@@ -37,8 +37,8 @@ from aiogram.methods import GetChatAdministrators
 # ================== الإعدادات المتقدمة ==================
 TOKEN = os.getenv("TOKEN", "")
 DEVELOPER_ID = 6516518035  # ضع ID المطور هنا
-SUPPORT_CHAT = "@SecurityGuardSupport"  # مجموعة الدعم
-BOT_USERNAME = "SecurityGuardProBot"  # اسم البوت
+SUPPORT_CHAT = "@Secret11110"  # مجموعة الدعم
+BOT_USERNAME = "Secret11110_bot"  # اسم البوت
 VERSION = "3.0.0"
 RELEASE_DATE = "2024"
 
